@@ -1,0 +1,31 @@
+{
+  "name": "booms-admin-web",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "cross-env NODE_OPTIONS='--max-old-space-size=16384' next dev",
+    "build": "cross-env NODE_OPTIONS='--max-old-space-size=16384' next build",
+    "start": "next start",
+    "lint": "next lint",
+    "dev:high": "cross-env NODE_OPTIONS='--max-old-space-size=32768' next dev"
+  },
+  "dependencies": {
+    "axios": "^1.5.0",
+    "bignumber.js": "^9.3.1",
+    "date-fns": "^4.1.0",
+    "lucide-react": "^0.294.0",
+    "next": "^13.5.11",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "react-toastify": "^11.0.5",
+    "tailwindcss": "^3.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "20.5.0",
+    "@types/react": "18.2.21",
+    "@types/react-dom": "18.2.7",
+    "autoprefixer": "^10.4.15",
+    "cross-env": "^10.1.0",
+    "postcss": "^8.4.29",
+    "typescript": "5.1.6"
+  }
+}

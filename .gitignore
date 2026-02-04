@@ -1,0 +1,107 @@
+# ==================== SECRETS & CONFIGURATION ====================
+# 🔐 JAMAIS commiter les fichiers .env avec des secrets réels !
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+.env.test
+
+# Fichiers contenant les clés API
+secrets.json
+credentials.json
+firebase-config.json
+
+# ==================== NODE.JS ====================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# ==================== NEXT.JS ====================
+.next/
+out/
+
+# ==================== REACT NATIVE ====================
+.expo/
+dist/
+*.jks
+*.p12
+*.key
+*.mobileprovision
+
+# ==================== PYTHON ====================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.venv
+
+venv.bak/
+.venv/
+.env
+
+# ==================== DATABASES ====================
+*.db
+*.sqlite
+*.sqlite3
+
+# ==================== IDE ====================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ==================== SYSTEM ====================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ==================== LOGS ====================
+logs/
+*.log
+
+# ==================== TESTING ====================
+coverage/
+.nyc_output/
+
+# ==================== BUILD ====================
+build/
+dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# ==================== OS ====================
+[Tt]humbs.db
+*.stackdump
+
+# ==================== PROJECT SPECIFIC ====================
+# Frontend React Native
+frontend/.expo/
+frontend/node_modules/
+
+# Backend Python
+backend/__pycache__/
+backend/.env
+backend/*.pyc
+
+# Admin Web Next.js
+admin-web/.next/
+admin-web/out/
+admin-web/node_modules/
