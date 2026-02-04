@@ -11,6 +11,10 @@ interface AccountStateGateProps {
 }
 
 const STATUS_LABELS: Record<string, { title: string; subtitle: string }> = {
+  inactive: {
+    title: 'Compte désactivé',
+    subtitle: 'Votre compte est désactivé. Vous pouvez contacter le support pour obtenir plus d\'informations.'
+  },
   suspended: {
     title: 'Compte temporairement désactivé',
     subtitle: 'Vous ne pouvez plus effectuer d\'opérations pendant la période indiquée.'

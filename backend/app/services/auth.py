@@ -168,6 +168,7 @@ def get_current_user_from_token(
             status_value = status_value.value
 
         status_labels = {
+            "inactive": "Compte désactivé",
             "active": "Compte actif",
             "review": "Compte en révision",
             "limited": "Compte limité",
@@ -175,8 +176,13 @@ def get_current_user_from_token(
             "banned": "Compte désactivé",
         }
 
+        is_blocking = bool(status_snapshot.get("is_blocking"))
+        if not is_blocking and not user.is_active:
+            status_value = "inactive"
+            is_blocking = True
+
         account_status = {
-            "is_blocking": bool(status_snapshot.get("is_blocking")),
+            "is_blocking": is_blocking,
             "status": status_value or "inactive",
             "status_label": status_labels.get(status_value or "", "Compte désactivé"),
             "status_reason": status_snapshot.get("reason"),
