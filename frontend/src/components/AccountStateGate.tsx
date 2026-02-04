@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { View, Text, StyleSheet, TextInput, TouchableOpacity } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useAuth } from '../contexts/AuthContext';
-import supportService, { AccountStatusSnapshot } from '../services/support';
+import { AccountStatusSnapshot } from '../services/support';
 import { palette, gradients, fonts } from '../styles/theme';
 import { navigationRef } from '../navigation/AppNavigator';
 
@@ -88,7 +89,7 @@ const InlineBanner = ({ status }: { status: AccountStatusSnapshot }) => {
 };
 
 export default function AccountStateGate({ children }: AccountStateGateProps) {
-  const { accountStatus, refreshAccountStatus, logout } = useAuth();
+  const { accountStatus, refreshAccountStatus, logout, token } = useAuth();
   const [localStatus, setLocalStatus] = useState<AccountStatusSnapshot | null>(accountStatus);
   const [appealMessage, setAppealMessage] = useState('');
   const [sendingAppeal, setSendingAppeal] = useState(false);
@@ -96,14 +97,13 @@ export default function AccountStateGate({ children }: AccountStateGateProps) {
 
   useEffect(() => {
     if (!accountStatus) {
-      supportService
-        .getAccountStatus()
-        .then(setLocalStatus)
-        .catch(() => undefined);
-    } else {
-      setLocalStatus(accountStatus);
+      if (token) {
+        refreshAccountStatus().catch(() => undefined);
+      }
+      return;
     }
-  }, [accountStatus]);
+    setLocalStatus(accountStatus);
+  }, [accountStatus, refreshAccountStatus, token]);
 
   const status = localStatus?.status?.toLowerCase();
   const isBlocking = Boolean(localStatus?.is_blocking) || status === 'inactive' || status === 'banned' || status === 'suspended';
@@ -122,11 +122,47 @@ export default function AccountStateGate({ children }: AccountStateGateProps) {
     try {
       setSendingAppeal(true);
       setAppealFeedback(null);
-      await supportService.submitBannedAppeal({ message: appealMessage.trim(), channel: 'mobile_app' });
+      let userPhone: string | undefined;
+      let userEmail: string | undefined;
+      try {
+        const storedUser = await AsyncStorage.getItem('booms_user');
+        if (storedUser) {
+          const parsed = JSON.parse(storedUser);
+          userPhone = parsed?.phone;
+          userEmail = parsed?.email;
+        }
+        if (!userPhone && !userEmail) {
+          const storedContact = await AsyncStorage.getItem('booms_contact');
+          if (storedContact) {
+            const parsed = JSON.parse(storedContact);
+            userPhone = parsed?.phone;
+            userEmail = parsed?.email;
+          }
+        }
+      } catch {
+        // silencieux
+      }
+
+      if (!userPhone && !userEmail) {
+        setAppealFeedback('Téléphone ou email requis pour contacter le support.');
+        return;
+      }
+
+      await supportService.submitBannedAppeal({
+        message: appealMessage.trim(),
+        channel: 'mobile_app',
+        user_phone: userPhone,
+        user_email: userEmail,
+      });
       setAppealFeedback('Votre message a bien été transmis à l\'équipe support.');
       setAppealMessage('');
     } catch (error: any) {
-      setAppealFeedback(error?.response?.data?.detail || 'Impossible d\'envoyer le message.');
+      const detail = error?.response?.data?.detail;
+      setAppealFeedback(
+        typeof detail === 'string'
+          ? detail
+          : 'Impossible d\'envoyer le message.'
+      );
     } finally {
       setSendingAppeal(false);
     }

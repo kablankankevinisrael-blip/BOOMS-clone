@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from '../contexts/AuthContext';
 import supportService, {
   SupportThread,
@@ -25,7 +26,7 @@ const CATEGORY_OPTIONS = [
 ];
 
 export default function SupportCenterScreen() {
-  const { accountStatus, isAuthenticated, user } = useAuth();
+  const { accountStatus, isAuthenticated, user, token } = useAuth();
   const [threads, setThreads] = useState<SupportThread[]>([]);
   const [selectedThread, setSelectedThread] = useState<SupportThread | null>(null);
   const [loadingThreads, setLoadingThreads] = useState(true);
@@ -34,9 +35,17 @@ export default function SupportCenterScreen() {
   const [composer, setComposer] = useState('');
   const [suggestions, setSuggestions] = useState<SuggestedTemplate[]>([]);
   const [draft, setDraft] = useState({ subject: '', category: 'general', message: '' });
+  const [supportFeedback, setSupportFeedback] = useState<string | null>(null);
+  const [contactPhone, setContactPhone] = useState('');
+  const [contactEmail, setContactEmail] = useState('');
+
+  const normalize = (value?: string | null) => (value || '').toLowerCase();
+  const isAccountBlocked =
+    Boolean(accountStatus?.is_blocking) ||
+    ['banned', 'suspended', 'inactive'].includes(normalize(accountStatus?.status));
+  const canUseThreads = Boolean(token) && isAuthenticated && !isAccountBlocked;
 
   const badgeConfig = useMemo(() => {
-    const normalize = (value?: string | null) => (value || '').toLowerCase();
     if (!isAuthenticated) {
       return {
         heading: 'Mode invité',
@@ -109,14 +118,30 @@ export default function SupportCenterScreen() {
   }, []);
 
   useEffect(() => {
-    if (!isAuthenticated) {
+    const loadContact = async () => {
+      try {
+        const storedContact = await AsyncStorage.getItem('booms_contact');
+        if (storedContact) {
+          const parsed = JSON.parse(storedContact);
+          setContactPhone(parsed?.phone || '');
+          setContactEmail(parsed?.email || '');
+        }
+      } catch {
+        // silencieux
+      }
+    };
+    loadContact();
+  }, []);
+
+  useEffect(() => {
+    if (!canUseThreads) {
       setThreads([]);
       setSelectedThread(null);
       setLoadingThreads(false);
       return;
     }
     loadThreads();
-  }, [isAuthenticated, loadThreads]);
+  }, [canUseThreads, loadThreads]);
 
   const selectThread = async (threadId: number) => {
     try {
@@ -136,6 +161,55 @@ export default function SupportCenterScreen() {
     }
     try {
       setCreatingThread(true);
+      setSupportFeedback(null);
+
+      if (!canUseThreads) {
+        let userPhone: string | undefined;
+        let userEmail: string | undefined;
+        try {
+          const storedUser = await AsyncStorage.getItem('booms_user');
+          if (storedUser) {
+            const parsed = JSON.parse(storedUser);
+            userPhone = parsed?.phone;
+            userEmail = parsed?.email;
+          }
+          if (!userPhone && !userEmail) {
+            const storedContact = await AsyncStorage.getItem('booms_contact');
+            if (storedContact) {
+              const parsed = JSON.parse(storedContact);
+              userPhone = parsed?.phone;
+              userEmail = parsed?.email;
+            }
+          }
+        } catch {
+          // silencieux
+        }
+
+        userPhone = userPhone || contactPhone.trim();
+        userEmail = userEmail || contactEmail.trim();
+
+        if (!userPhone && !userEmail) {
+          setSupportFeedback('Téléphone ou email requis pour contacter le support.');
+          return;
+        }
+
+        try {
+          await AsyncStorage.setItem('booms_contact', JSON.stringify({ phone: userPhone, email: userEmail }));
+        } catch {
+          // silencieux
+        }
+
+        await supportService.submitBannedAppeal({
+          message: `${draft.subject.trim()}\n\n${draft.message.trim()}`,
+          channel: 'mobile_app',
+          user_phone: userPhone,
+          user_email: userEmail,
+        });
+        setDraft({ subject: '', category: draft.category, message: '' });
+        setSupportFeedback('Votre message a bien été transmis à l\'équipe support.');
+        return;
+      }
+
       const created = await supportService.createThread({
         subject: draft.subject.trim(),
         category: draft.category,
@@ -145,6 +219,10 @@ export default function SupportCenterScreen() {
       await loadThreads(created.id);
     } catch (error) {
       console.error('❌ [SUPPORT] Erreur création ticket', error);
+      const detail = (error as any)?.response?.data?.detail;
+      setSupportFeedback(
+        typeof detail === 'string' ? detail : 'Impossible d\'envoyer le message.'
+      );
     } finally {
       setCreatingThread(false);
     }
@@ -152,6 +230,10 @@ export default function SupportCenterScreen() {
 
   const handleSendMessage = async () => {
     if (!selectedThread || !composer.trim()) return;
+      if (!canUseThreads) {
+      setSupportFeedback('Connexion requise pour répondre à un ticket.');
+      return;
+    }
     try {
       setSendingMessage(true);
       await supportService.postMessage(selectedThread.id, { message: composer.trim() });
@@ -159,6 +241,10 @@ export default function SupportCenterScreen() {
       await selectThread(selectedThread.id);
     } catch (error) {
       console.error('❌ [SUPPORT] Erreur envoi message', error);
+      const detail = (error as any)?.response?.data?.detail;
+      setSupportFeedback(
+        typeof detail === 'string' ? detail : 'Impossible d\'envoyer le message.'
+      );
     } finally {
       setSendingMessage(false);
     }
@@ -242,6 +328,28 @@ export default function SupportCenterScreen() {
 
         <View style={styles.sectionCard}>
           <Text style={styles.sectionTitle}>Nouveau ticket</Text>
+          {!canUseThreads && (
+            <View style={styles.fieldGroup}>
+              <Text style={styles.fieldLabel}>Contact (téléphone ou email)</Text>
+              <TextInput
+                style={styles.input}
+                value={contactPhone}
+                onChangeText={setContactPhone}
+                placeholder="Téléphone"
+                placeholderTextColor="rgba(255,255,255,0.4)"
+                keyboardType="phone-pad"
+              />
+              <TextInput
+                style={[styles.input, { marginTop: 10 }]}
+                value={contactEmail}
+                onChangeText={setContactEmail}
+                placeholder="Email"
+                placeholderTextColor="rgba(255,255,255,0.4)"
+                keyboardType="email-address"
+                autoCapitalize="none"
+              />
+            </View>
+          )}
           <View style={styles.fieldGroup}>
             <Text style={styles.fieldLabel}>Objet</Text>
             <TextInput
@@ -293,9 +401,12 @@ export default function SupportCenterScreen() {
             disabled={creatingThread}
           >
             <Text style={styles.primaryButtonText}>
-              {creatingThread ? 'Création en cours...' : 'Envoyer au support'}
+              {creatingThread ? 'Création en cours...' : isAuthenticated && !isAccountBlocked ? 'Envoyer au support' : 'Envoyer au support'}
             </Text>
           </TouchableOpacity>
+          {supportFeedback && (
+            <Text style={styles.feedbackText}>{supportFeedback}</Text>
+          )}
         </View>
 
         <View style={styles.sectionCard}>
@@ -582,6 +693,11 @@ const styles = StyleSheet.create({
     fontFamily: fonts.bodyMedium,
     color: palette.obsidian,
     fontSize: 16,
+  },
+  feedbackText: {
+    fontFamily: fonts.body,
+    color: palette.amber,
+    marginTop: 12,
   },
   threadChip: {
     padding: 16,

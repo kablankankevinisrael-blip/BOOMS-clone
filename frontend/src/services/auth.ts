@@ -114,7 +114,7 @@ class AuthService {
       
       boomsWebSocket.disconnect();
       
-      await AsyncStorage.multiRemove([this.TOKEN_KEY, this.USER_KEY]);
+      await AsyncStorage.multiRemove([this.TOKEN_KEY, this.USER_KEY, 'booms_contact']);
       
       console.log('🔐 [AUTH] Déconnexion - données supprimées');
     } catch (error) {
@@ -157,6 +157,10 @@ class AuthService {
       };
       
       await AsyncStorage.setItem(this.USER_KEY, JSON.stringify(userData));
+      await AsyncStorage.setItem('booms_contact', JSON.stringify({
+        phone: authData.phone,
+        email: ''
+      }));
       console.log('💾 [AUTH] User data sauvegardé:', userData);
     } catch (error) {
       console.error('❌ [AUTH] Store auth data error:', error);

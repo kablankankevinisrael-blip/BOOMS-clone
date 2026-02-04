@@ -129,7 +129,7 @@ export const supportService = {
     return FALLBACK_TEMPLATES;
   },
 
-  async submitBannedAppeal(payload: { message: string; channel?: string }) {
+  async submitBannedAppeal(payload: { message: string; channel?: string; user_phone?: string; user_email?: string }) {
     try {
       const { data } = await api.post('/support/banned-messages', payload);
       return data;

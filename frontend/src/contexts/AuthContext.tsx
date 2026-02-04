@@ -300,6 +300,14 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           await tokenService.removeToken();
           setToken(null);
           setUser(null);
+          try {
+            await AsyncStorage.setItem(
+              'booms_contact',
+              JSON.stringify({ phone: authData.phone, email: '' })
+            );
+          } catch {
+            // silencieux
+          }
           console.log('⛔ [AUTH] Compte inactif détecté, écran de blocage activé');
           return;
         }
