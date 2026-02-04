@@ -339,6 +339,9 @@ export interface SupportThreadListItem {
   category: string;
   status: SupportThreadStatus;
   priority: SupportPriority;
+  user_phone?: string | null;
+  user_email?: string | null;
+  user_full_name?: string | null;
   last_message_preview?: string | null;
   last_message_at?: string | null;
   created_at: string;

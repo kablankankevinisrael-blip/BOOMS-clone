@@ -59,6 +59,9 @@ class SupportThreadListItem(BaseModel):
     category: str
     status: SupportThreadStatus
     priority: SupportPriority
+    user_phone: Optional[str] = None
+    user_email: Optional[str] = None
+    user_full_name: Optional[str] = None
     last_message_preview: Optional[str]
     last_message_at: Optional[datetime]
     created_at: datetime
@@ -73,6 +76,9 @@ class SupportThreadDetailResponse(BaseModel):
     id: int
     reference: str
     user_id: int
+    user_phone: Optional[str] = None
+    user_email: Optional[str] = None
+    user_full_name: Optional[str] = None
     assigned_admin_id: Optional[int]
     subject: str
     category: str

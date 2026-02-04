@@ -40,6 +40,7 @@ export default function SupportCenterScreen() {
   const [contactEmail, setContactEmail] = useState('');
   const [publicResponses, setPublicResponses] = useState<BannedMessage[]>([]);
   const [refreshingPublic, setRefreshingPublic] = useState(false);
+  const [refreshingThreads, setRefreshingThreads] = useState(false);
   const threadChatRef = useRef<ScrollView | null>(null);
   const [expandedMessageId, setExpandedMessageId] = useState<string | null>(null);
 
@@ -144,6 +145,24 @@ export default function SupportCenterScreen() {
     }
   }, []);
 
+  const refreshThreads = useCallback(async () => {
+    if (!canUseThreads) return;
+    try {
+      setRefreshingThreads(true);
+      const data = await supportService.listThreads('mine');
+      setThreads(data);
+      const nextId = selectedThread?.id || data[0]?.id;
+      if (nextId) {
+        const detail = await supportService.getThread(nextId);
+        setSelectedThread(detail);
+      }
+    } catch (error) {
+      console.error('❌ [SUPPORT] Erreur refresh threads', error);
+    } finally {
+      setRefreshingThreads(false);
+    }
+  }, [canUseThreads, selectedThread?.id]);
+
   useEffect(() => {
     supportService.getSuggestedMessages().then(setSuggestions).catch(() => setSuggestions([]));
   }, []);
@@ -207,6 +226,14 @@ export default function SupportCenterScreen() {
     }
     loadThreads();
   }, [canUseThreads, loadThreads]);
+
+  useEffect(() => {
+    if (!canUseThreads) return;
+    const interval = setInterval(() => {
+      refreshThreads();
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [canUseThreads, refreshThreads]);
 
   const selectThread = async (threadId: number) => {
     try {
@@ -380,6 +407,19 @@ export default function SupportCenterScreen() {
                 disabled={refreshingPublic}
               >
                 {refreshingPublic ? (
+                  <ActivityIndicator size="small" color={palette.white} />
+                ) : (
+                  <Text style={styles.refreshButtonText}>Actualiser</Text>
+                )}
+              </TouchableOpacity>
+            )}
+            {canUseThreads && (
+              <TouchableOpacity
+                onPress={refreshThreads}
+                style={styles.refreshButton}
+                disabled={refreshingThreads}
+              >
+                {refreshingThreads ? (
                   <ActivityIndicator size="small" color={palette.white} />
                 ) : (
                   <Text style={styles.refreshButtonText}>Actualiser</Text>

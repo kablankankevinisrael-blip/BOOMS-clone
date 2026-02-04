@@ -62,6 +62,18 @@ class SupportThread(Base):
         order_by="SupportMessage.created_at"
     )
 
+    @property
+    def user_phone(self):
+        return getattr(self.user, "phone", None)
+
+    @property
+    def user_email(self):
+        return getattr(self.user, "email", None)
+
+    @property
+    def user_full_name(self):
+        return getattr(self.user, "full_name", None)
+
 
 class SupportMessage(Base):
     __tablename__ = "support_messages"

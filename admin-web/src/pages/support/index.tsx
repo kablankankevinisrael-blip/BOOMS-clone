@@ -4,7 +4,7 @@ import { formatDistanceToNow } from 'date-fns';
 import { fr } from 'date-fns/locale';
 import AdminLayout from '@/components/Layout/AdminLayout';
 import { supportService } from '@/services/support';
-import { AccountStatus, BannedMessage } from '@/types';
+import { AccountStatus, BannedMessage, SupportThreadDetail, SupportThreadListItem } from '@/types';
 import {
   AlertTriangle,
   Inbox,
@@ -18,6 +18,7 @@ import {
 
 type BannedFilter = 'pending' | 'responded' | 'all';
 type ModerationAction = 'deactivate' | 'ban' | 'delete' | null;
+type SupportMode = 'banned' | 'threads';
 
 type ChatItem = {
   id: string;
@@ -29,6 +30,7 @@ type ChatItem = {
 };
 
 export default function SupportCommandCenter() {
+  const [supportMode, setSupportMode] = useState<SupportMode>('banned');
   const [bannedMessages, setBannedMessages] = useState<BannedMessage[]>([]);
   const [bannedFilter, setBannedFilter] = useState<BannedFilter>('pending');
   const [bannedLoading, setBannedLoading] = useState(false);
@@ -37,6 +39,13 @@ export default function SupportCommandCenter() {
   const [respondingMessage, setRespondingMessage] = useState<BannedMessage | null>(null);
   const [responseDraft, setResponseDraft] = useState('');
   const [responding, setResponding] = useState(false);
+
+  const [threads, setThreads] = useState<SupportThreadListItem[]>([]);
+  const [threadsLoading, setThreadsLoading] = useState(false);
+  const [selectedThreadId, setSelectedThreadId] = useState<number | null>(null);
+  const [selectedThread, setSelectedThread] = useState<SupportThreadDetail | null>(null);
+  const [threadReply, setThreadReply] = useState('');
+  const [sendingThreadReply, setSendingThreadReply] = useState(false);
 
   const [moderationUser, setModerationUser] = useState<{ id: number; phone?: string } | null>(null);
   const [moderationAction, setModerationAction] = useState<ModerationAction>(null);
@@ -51,6 +60,12 @@ export default function SupportCommandCenter() {
   useEffect(() => {
     loadBannedMessages(bannedFilter);
   }, [bannedFilter]);
+
+  useEffect(() => {
+    if (supportMode === 'threads') {
+      loadThreads(true);
+    }
+  }, [supportMode]);
 
   const loadBannedMessages = async (filter: BannedFilter, silent = false) => {
     if (!silent) {
@@ -71,6 +86,46 @@ export default function SupportCommandCenter() {
       if (!silent) {
         setBannedLoading(false);
       }
+    }
+  };
+
+  const loadThreads = async (silent = false) => {
+    if (!silent) {
+      setThreadsLoading(true);
+    }
+    try {
+      const data = await supportService.getThreads({ scope: 'all' });
+      const ordered = [...data].sort((a, b) => {
+        const aTime = a.last_message_at ? new Date(a.last_message_at).getTime() : 0;
+        const bTime = b.last_message_at ? new Date(b.last_message_at).getTime() : 0;
+        return bTime - aTime;
+      });
+      setThreads(ordered);
+      const nextId = selectedThreadId || ordered[0]?.id || null;
+      if (nextId) {
+        await loadThreadDetail(nextId);
+      } else {
+        setSelectedThreadId(null);
+        setSelectedThread(null);
+      }
+    } catch (error) {
+      console.error(error);
+      toast.error('Impossible de charger les conversations support.');
+    } finally {
+      if (!silent) {
+        setThreadsLoading(false);
+      }
+    }
+  };
+
+  const loadThreadDetail = async (threadId: number) => {
+    try {
+      const detail = await supportService.getThreadById(threadId);
+      setSelectedThread(detail);
+      setSelectedThreadId(threadId);
+    } catch (error) {
+      console.error(error);
+      toast.error('Conversation introuvable.');
     }
   };
 
@@ -99,11 +154,48 @@ export default function SupportCommandCenter() {
     }
   };
 
+  const sendQuickBannedResponse = async (message: BannedMessage) => {
+    if (!responseDraft.trim()) {
+      toast.warning('La réponse est vide.');
+      return;
+    }
+    setResponding(true);
+    try {
+      await supportService.respondToBannedMessage(message.id, responseDraft.trim());
+      toast.success('Réponse envoyée');
+      setResponseDraft('');
+      await loadBannedMessages(bannedFilter);
+    } catch (error) {
+      console.error(error);
+      toast.error('Impossible d’envoyer la réponse.');
+    } finally {
+      setResponding(false);
+    }
+  };
+
   const openModerationModal = (action: ModerationAction, userId: number, phone?: string) => {
     setModerationUser({ id: userId, phone });
     setModerationAction(action);
     setModerationReason('');
     loadAccountStatus(userId);
+  };
+
+  const sendThreadReply = async () => {
+    if (!selectedThread || !threadReply.trim()) {
+      toast.warning('La réponse est vide.');
+      return;
+    }
+    setSendingThreadReply(true);
+    try {
+      await supportService.sendMessage(selectedThread.id, { message: threadReply.trim() });
+      setThreadReply('');
+      await loadThreadDetail(selectedThread.id);
+    } catch (error) {
+      console.error(error);
+      toast.error('Impossible d’envoyer la réponse.');
+    } finally {
+      setSendingThreadReply(false);
+    }
   };
 
   const loadAccountStatus = async (userId: number) => {
@@ -327,6 +419,37 @@ export default function SupportCommandCenter() {
       });
   }, [selectedBanned?.messages]);
 
+  const latestBannedMessage = useMemo(() => {
+    if (!selectedBanned?.messages?.length) return null;
+    return selectedBanned.messages
+      .slice()
+      .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
+  }, [selectedBanned?.messages]);
+
+  const latestPendingBannedMessage = useMemo(() => {
+    if (!selectedBanned?.messages?.length) return null;
+    return selectedBanned.messages
+      .filter((msg) => (msg.status || 'pending') !== 'responded')
+      .slice()
+      .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
+  }, [selectedBanned?.messages]);
+
+  const threadChatItems = useMemo<ChatItem[]>(() => {
+    if (!selectedThread?.messages?.length) {
+      return [];
+    }
+    return selectedThread.messages
+      .filter((message) => !message.is_internal)
+      .slice()
+      .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
+      .map((message) => ({
+        id: `thread-${message.id}`,
+        role: message.sender_type === 'admin' ? 'admin' : 'user',
+        text: message.body,
+        at: message.created_at,
+      }));
+  }, [selectedThread?.messages]);
+
   const heroMetrics = [
     {
       label: 'Alertes bannies',
@@ -348,6 +471,13 @@ export default function SupportCommandCenter() {
       sub: 'Sur l’ensemble du filtre',
       icon: Mail,
       accent: 'from-blue-500/40 via-blue-400/30 to-cyan-400/30',
+    },
+    {
+      label: 'Conversations actives',
+      value: threads.length.toString(),
+      sub: 'Comptes authentifiés',
+      icon: Inbox,
+      accent: 'from-slate-500/40 via-slate-400/30 to-slate-300/30',
     },
   ];
 
@@ -375,7 +505,7 @@ export default function SupportCommandCenter() {
                 ))}
               </div>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 flex-1">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 flex-1">
               {heroMetrics.map((metric) => (
                 <div
                   key={metric.label}
@@ -404,54 +534,90 @@ export default function SupportCommandCenter() {
 
         <section className="grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
           <aside className="space-y-4">
-            <div className="rounded-2xl border border-rose-100 bg-white shadow-sm p-4">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-semibold text-rose-900 flex items-center gap-2">
-                  <ShieldAlert className="w-4 h-4" />
-                  Alertes bannies
-                </p>
+            <div className="rounded-2xl border border-slate-200 bg-white shadow-sm p-4">
+              <p className="text-xs uppercase tracking-wide text-slate-400">Vue support</p>
+              <div className="flex flex-wrap gap-2 mt-3">
                 <button
-                  onClick={() => loadBannedMessages(bannedFilter)}
-                  className="inline-flex items-center gap-2 text-xs text-rose-700"
+                  onClick={() => setSupportMode('banned')}
+                  className={`px-3 py-1 rounded-full text-xs font-semibold border ${
+                    supportMode === 'banned'
+                      ? 'bg-rose-600 text-white border-rose-600'
+                      : 'bg-white text-rose-700 border-rose-200'
+                  }`}
                 >
-                  <RefreshCw className="w-3 h-3" /> Rafraîchir
+                  Comptes bloqués
+                </button>
+                <button
+                  onClick={() => setSupportMode('threads')}
+                  className={`px-3 py-1 rounded-full text-xs font-semibold border ${
+                    supportMode === 'threads'
+                      ? 'bg-slate-900 text-white border-slate-900'
+                      : 'bg-white text-slate-700 border-slate-200'
+                  }`}
+                >
+                  Utilisateurs actifs
                 </button>
               </div>
-              <div className="flex flex-wrap items-center gap-2 mt-3">
-                {(['pending', 'responded', 'all'] as BannedFilter[]).map((option) => (
-                  <button
-                    key={option}
-                    onClick={() => setBannedFilter(option)}
-                    className={`px-3 py-1 rounded-full text-xs font-semibold border ${
-                      bannedFilter === option
-                        ? 'bg-rose-600 text-white border-rose-600'
-                        : 'bg-white text-rose-700 border-rose-200'
-                    }`}
-                  >
-                    {option === 'pending' ? 'En attente' : option === 'responded' ? 'Répondu' : 'Tous'}
-                  </button>
-                ))}
-              </div>
             </div>
+
+            {supportMode === 'banned' && (
+              <div className="rounded-2xl border border-rose-100 bg-white shadow-sm p-4">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-semibold text-rose-900 flex items-center gap-2">
+                    <ShieldAlert className="w-4 h-4" />
+                    Alertes bannies
+                  </p>
+                  <button
+                    onClick={() => loadBannedMessages(bannedFilter)}
+                    className="inline-flex items-center gap-2 text-xs text-rose-700"
+                  >
+                    <RefreshCw className="w-3 h-3" /> Rafraîchir
+                  </button>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 mt-3">
+                  {(['pending', 'responded', 'all'] as BannedFilter[]).map((option) => (
+                    <button
+                      key={option}
+                      onClick={() => setBannedFilter(option)}
+                      className={`px-3 py-1 rounded-full text-xs font-semibold border ${
+                        bannedFilter === option
+                          ? 'bg-rose-600 text-white border-rose-600'
+                          : 'bg-white text-rose-700 border-rose-200'
+                      }`}
+                    >
+                      {option === 'pending' ? 'En attente' : option === 'responded' ? 'Répondu' : 'Tous'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
               <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
                 <div>
-                  <p className="text-sm font-semibold text-slate-900">Utilisateurs ({bannedUsers.length})</p>
-                  <p className="text-xs text-slate-500">Organisés par dernière activité</p>
+                  <p className="text-sm font-semibold text-slate-900">
+                    {supportMode === 'banned'
+                      ? `Utilisateurs (${bannedUsers.length})`
+                      : `Conversations (${threads.length})`}
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    {supportMode === 'banned'
+                      ? 'Organisés par dernière activité'
+                      : 'Threads authentifiés actifs'}
+                  </p>
                 </div>
                 <LayoutGrid className="w-4 h-4 text-slate-400" />
               </div>
               <div className="max-h-[calc(100vh-360px)] overflow-y-auto divide-y divide-slate-100">
-                {bannedLoading && (
+                {supportMode === 'banned' && bannedLoading && (
                   <div className="p-6 text-center text-sm text-slate-500">Chargement...</div>
                 )}
-                {!bannedLoading && !bannedUsers.length && (
+                {supportMode === 'banned' && !bannedLoading && !bannedUsers.length && (
                   <div className="p-6 text-center text-sm text-slate-500">
                     Aucune alerte pour ce filtre.
                   </div>
                 )}
-                {bannedUsers.map((user) => (
+                {supportMode === 'banned' && bannedUsers.map((user) => (
                   <button
                     key={user.key}
                     onClick={() => setSelectedBannedKey(user.key)}
@@ -478,26 +644,65 @@ export default function SupportCommandCenter() {
                     </div>
                   </button>
                 ))}
+
+                {supportMode === 'threads' && threadsLoading && (
+                  <div className="p-6 text-center text-sm text-slate-500">Chargement...</div>
+                )}
+                {supportMode === 'threads' && !threadsLoading && !threads.length && (
+                  <div className="p-6 text-center text-sm text-slate-500">
+                    Aucune conversation authentifiée.
+                  </div>
+                )}
+                {supportMode === 'threads' && threads.map((thread) => (
+                  <button
+                    key={thread.id}
+                    onClick={() => loadThreadDetail(thread.id)}
+                    className={`w-full text-left px-4 py-3 transition ${
+                      selectedThreadId === thread.id
+                        ? 'bg-slate-50 border-l-4 border-slate-900'
+                        : 'hover:bg-slate-50'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-semibold text-slate-900 truncate">
+                        {thread.user_phone || thread.user_email || `Utilisateur #${thread.user_id || thread.id}`}
+                      </p>
+                      {!!thread.unread_admin_count && thread.unread_admin_count > 0 && (
+                        <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-slate-900 text-white">
+                          {thread.unread_admin_count} non lus
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-slate-500 mt-1 truncate">
+                      {thread.reference} • {thread.subject || 'Conversation support'}
+                    </p>
+                    <div className="flex items-center gap-2 mt-2">
+                      <span className="text-[11px] text-slate-400">
+                        {formattedRelative(thread.last_message_at || thread.created_at)}
+                      </span>
+                    </div>
+                  </button>
+                ))}
               </div>
             </div>
           </aside>
 
           <section className="rounded-3xl border border-slate-200 bg-white shadow-xl p-6 space-y-6 min-h-[640px]">
-            {bannedLoading && (
+            {supportMode === 'banned' && bannedLoading && (
               <div className="flex flex-col items-center justify-center h-64 text-slate-500 gap-3">
                 <div className="w-12 h-12 rounded-full border-4 border-slate-200 border-t-rose-500 animate-spin" />
                 <p>Chargement des alertes...</p>
               </div>
             )}
 
-            {!bannedLoading && !selectedBanned && (
+            {supportMode === 'banned' && !bannedLoading && !selectedBanned && (
               <div className="flex flex-col items-center justify-center h-64 text-center text-slate-500 gap-3">
                 <Inbox className="w-10 h-10" />
                 <p>Sélectionnez un utilisateur pour afficher la conversation.</p>
               </div>
             )}
 
-            {!bannedLoading && selectedBanned && (
+            {supportMode === 'banned' && !bannedLoading && selectedBanned && (
               <>
                 <div className="flex flex-wrap items-start gap-4 justify-between">
                   <div className="space-y-1">
@@ -620,6 +825,129 @@ export default function SupportCommandCenter() {
                       )}
                     </div>
                   ))}
+                </div>
+
+                <div className="rounded-2xl border border-rose-100 bg-rose-50 p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs uppercase text-rose-500">Répondre (compte bloqué)</p>
+                    <span className="text-[11px] text-rose-500">
+                      {latestPendingBannedMessage
+                        ? 'Message en attente'
+                        : latestBannedMessage
+                          ? 'Dernier message sélectionné'
+                          : 'Aucun message'}
+                    </span>
+                  </div>
+                  <textarea
+                    value={responseDraft}
+                    onChange={(event) => setResponseDraft(event.target.value)}
+                    className="w-full min-h-[140px] rounded-2xl border border-rose-200 focus:ring-2 focus:ring-rose-200 focus:border-rose-400 text-sm p-4"
+                    placeholder="Rédigez une réponse..."
+                  />
+                  <div className="flex items-center justify-end">
+                    <button
+                      onClick={() => {
+                        const target = latestPendingBannedMessage || latestBannedMessage;
+                        if (!target) {
+                          toast.warning('Aucun message à traiter.');
+                          return;
+                        }
+                        sendQuickBannedResponse(target);
+                      }}
+                      disabled={responding || !responseDraft.trim() || !(latestPendingBannedMessage || latestBannedMessage)}
+                      className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-rose-600 text-white text-sm font-semibold disabled:opacity-40"
+                    >
+                      <Send className="w-4 h-4" />
+                      {responding ? 'Envoi...' : 'Envoyer'}
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {supportMode === 'threads' && threadsLoading && (
+              <div className="flex flex-col items-center justify-center h-64 text-slate-500 gap-3">
+                <div className="w-12 h-12 rounded-full border-4 border-slate-200 border-t-slate-900 animate-spin" />
+                <p>Chargement des conversations...</p>
+              </div>
+            )}
+
+            {supportMode === 'threads' && !threadsLoading && !selectedThread && (
+              <div className="flex flex-col items-center justify-center h-64 text-center text-slate-500 gap-3">
+                <Inbox className="w-10 h-10" />
+                <p>Sélectionnez une conversation pour afficher le chat.</p>
+              </div>
+            )}
+
+            {supportMode === 'threads' && !threadsLoading && selectedThread && (
+              <>
+                <div className="flex flex-wrap items-start gap-4 justify-between">
+                  <div className="space-y-1">
+                    <p className="text-xs uppercase text-slate-400 tracking-wide">Conversation authentifiée</p>
+                    <h2 className="text-2xl font-semibold text-slate-900">{selectedThread.subject}</h2>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="px-3 py-1 text-xs font-semibold rounded-full bg-slate-100 text-slate-600">
+                        {selectedThread.reference}
+                      </span>
+                      <span className="text-xs text-slate-400">
+                        Dernier message {formattedRelative(selectedThread.last_message_at || selectedThread.created_at)}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 max-w-xl">
+                      {selectedThread.user_phone || selectedThread.user_email || `Utilisateur #${selectedThread.user_id}`}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => loadThreads()}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-slate-200 text-sm text-slate-600 hover:border-slate-400"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                    Rafraîchir
+                  </button>
+                </div>
+
+                <div className="space-y-4 max-h-[420px] overflow-y-auto pr-1">
+                  {threadChatItems.length === 0 && (
+                    <p className="text-sm text-slate-500">Aucun message pour le moment.</p>
+                  )}
+                  {threadChatItems.map((item) => (
+                    <div
+                      key={item.id}
+                      className={`rounded-2xl border p-4 max-w-[80%] ${
+                        item.role === 'admin'
+                          ? 'ml-auto bg-slate-50 border-slate-200'
+                          : 'bg-white border-slate-100'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-slate-700">
+                          {item.role === 'admin' ? 'Booms' : 'Client'}
+                        </span>
+                        <span className="text-xs text-slate-400">{formattedRelative(item.at)}</span>
+                      </div>
+                      <p className="text-sm text-slate-700 mt-2 whitespace-pre-line">{item.text}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-3">
+                  <p className="text-xs uppercase text-slate-400">Répondre</p>
+                  <textarea
+                    value={threadReply}
+                    onChange={(event) => setThreadReply(event.target.value)}
+                    className="w-full min-h-[140px] rounded-2xl border border-slate-200 focus:ring-2 focus:ring-slate-300 focus:border-slate-400 text-sm p-4"
+                    placeholder="Rédigez une réponse..."
+                  />
+                  <div className="flex items-center justify-end">
+                    <button
+                      onClick={sendThreadReply}
+                      disabled={sendingThreadReply || !threadReply.trim()}
+                      className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-slate-900 text-white text-sm font-semibold disabled:opacity-40"
+                    >
+                      <Send className="w-4 h-4" />
+                      {sendingThreadReply ? 'Envoi...' : 'Envoyer'}
+                    </button>
+                  </div>
                 </div>
               </>
             )}
