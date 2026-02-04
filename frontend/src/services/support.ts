@@ -129,11 +129,12 @@ export const supportService = {
     return FALLBACK_TEMPLATES;
   },
 
-  async getPublicBannedMessages(payload: { phone?: string; email?: string }): Promise<BannedMessage[]> {
+  async getPublicBannedMessages(payload: { phone?: string; email?: string; channel?: string }): Promise<BannedMessage[]> {
     const { data } = await api.get('/support/banned-messages/public', {
       params: {
         phone: payload.phone,
         email: payload.email,
+        channel: payload.channel,
       },
     });
     return data;

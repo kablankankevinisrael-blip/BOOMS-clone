@@ -49,6 +49,7 @@ export default function SupportCenterScreen() {
     Boolean(accountStatus?.is_blocking) ||
     ['banned', 'suspended', 'inactive', 'deleted'].includes(normalize(accountStatus?.status));
   const canUseThreads = Boolean(token) && isAuthenticated && !isAccountBlocked;
+  const isGuestSupport = !token && !isAccountBlocked;
 
   const badgeConfig = useMemo(() => {
     if (!isAuthenticated) {
@@ -170,10 +171,11 @@ export default function SupportCenterScreen() {
   const refreshPublicResponses = useCallback(async () => {
     const phone = contactPhone.trim();
     const email = contactEmail.trim();
+    const channel = isAccountBlocked ? 'mobile_app' : 'guest';
     if (!phone && !email) return;
     try {
       setRefreshingPublic(true);
-      const data = await supportService.getPublicBannedMessages({ phone, email });
+      const data = await supportService.getPublicBannedMessages({ phone, email, channel });
       setPublicResponses(data);
     } catch {
       // silencieux
@@ -204,6 +206,16 @@ export default function SupportCenterScreen() {
   useEffect(() => {
     const loadContact = async () => {
       try {
+        if (isAuthenticated && token) {
+          const storedUser = await AsyncStorage.getItem('booms_user');
+          if (storedUser) {
+            const parsed = JSON.parse(storedUser);
+            setContactPhone(parsed?.phone || '');
+            setContactEmail(parsed?.email || '');
+            return;
+          }
+        }
+
         const storedContact = await AsyncStorage.getItem('booms_contact');
         if (storedContact) {
           const parsed = JSON.parse(storedContact);
@@ -215,7 +227,7 @@ export default function SupportCenterScreen() {
       }
     };
     loadContact();
-  }, []);
+  }, [isAuthenticated, token]);
 
   useEffect(() => {
     if (!canUseThreads) {
@@ -254,15 +266,9 @@ export default function SupportCenterScreen() {
       setSupportFeedback(null);
 
       if (!canUseThreads) {
-        let userPhone: string | undefined;
-        let userEmail: string | undefined;
+        let userPhone: string | undefined = contactPhone.trim();
+        let userEmail: string | undefined = contactEmail.trim();
         try {
-          const storedUser = await AsyncStorage.getItem('booms_user');
-          if (storedUser) {
-            const parsed = JSON.parse(storedUser);
-            userPhone = parsed?.phone;
-            userEmail = parsed?.email;
-          }
           if (!userPhone && !userEmail) {
             const storedContact = await AsyncStorage.getItem('booms_contact');
             if (storedContact) {
@@ -275,9 +281,6 @@ export default function SupportCenterScreen() {
           // silencieux
         }
 
-        userPhone = userPhone || contactPhone.trim();
-        userEmail = userEmail || contactEmail.trim();
-
         if (!userPhone && !userEmail) {
           setSupportFeedback('Téléphone ou email requis pour contacter le support.');
           return;
@@ -289,14 +292,21 @@ export default function SupportCenterScreen() {
           // silencieux
         }
 
-        await supportService.submitBannedAppeal({
+        const created = await supportService.submitBannedAppeal({
           message: composer.trim(),
-          channel: 'mobile_app',
+          channel: isAccountBlocked ? 'mobile_app' : 'guest',
           user_phone: userPhone,
           user_email: userEmail,
         });
+        if (created?.id) {
+          setPublicResponses((prev) => {
+            const merged = [...prev, created];
+            return merged.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
+          });
+        }
         setComposer('');
         setSupportFeedback('Votre message a bien été transmis à l\'équipe support.');
+        await refreshPublicResponses();
         return;
       }
 
@@ -430,6 +440,9 @@ export default function SupportCenterScreen() {
           {!canUseThreads && (
             <View style={styles.fieldGroup}>
               <Text style={styles.fieldLabel}>Contact (téléphone ou email)</Text>
+              {isGuestSupport && (
+                <Text style={styles.guestHint}>Accès invité : vos messages seront traités par le support.</Text>
+              )}
               <TextInput
                 style={styles.input}
                 value={contactPhone}
@@ -698,6 +711,12 @@ const styles = StyleSheet.create({
     padding: 14,
     color: palette.white,
     fontFamily: fonts.body,
+  },
+  guestHint: {
+    fontFamily: fonts.body,
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.6)',
+    marginBottom: 8,
   },
   textArea: {
     minHeight: 88,

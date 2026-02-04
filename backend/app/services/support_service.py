@@ -108,6 +108,14 @@ class SupportService:
         self._ensure_can_access(thread, current_user)
         return thread
 
+    def delete_thread(self, thread_id: int) -> None:
+        thread = self.db.query(SupportThread).filter(SupportThread.id == thread_id).first()
+        if not thread:
+            raise ValueError("Thread de support introuvable")
+
+        self.db.delete(thread)
+        self.db.commit()
+
     # -----------------------------
     # Messaging helpers
     # -----------------------------
@@ -240,19 +248,19 @@ class SupportService:
         if not body:
             raise ValueError("Le message est obligatoire")
 
-        if current_user is None and not (payload.user_phone or payload.user_email):
+        channel_value = payload.channel or ("mobile_app" if current_user else "guest")
+        is_guest_channel = channel_value == "guest"
+        effective_user = None if is_guest_channel else current_user
+
+        if effective_user is None and not (payload.user_phone or payload.user_email):
             raise ValueError("Téléphone ou email requis pour vous identifier")
 
-        resolved_user = None
-        if current_user is None:
-            resolved_user = self._resolve_user_by_contact(payload.user_phone, payload.user_email)
-
         message = BannedUserMessage(
-            user_id=current_user.id if current_user else (resolved_user.id if resolved_user else None),
-            user_phone=current_user.phone if current_user else payload.user_phone,
-            user_email=current_user.email if current_user else payload.user_email,
+            user_id=effective_user.id if effective_user else None,
+            user_phone=effective_user.phone if effective_user else payload.user_phone,
+            user_email=effective_user.email if effective_user else payload.user_email,
             message=body,
-            channel=(payload.channel or "app"),
+            channel=channel_value,
             meta_payload=payload.metadata or {},
         )
         self.db.add(message)
@@ -260,14 +268,16 @@ class SupportService:
         self.db.refresh(message)
         return self._enrich_banned_message(message)
 
-    def list_banned_messages(self, status_filter: Optional[str]) -> list[dict]:
+    def list_banned_messages(self, status_filter: Optional[str], channel: Optional[str] = None) -> list[dict]:
         query = self.db.query(BannedUserMessage)
         if status_filter:
             query = query.filter(BannedUserMessage.status == status_filter)
+        if channel:
+            query = query.filter(BannedUserMessage.channel == channel)
         messages = query.order_by(BannedUserMessage.created_at.desc()).all()
         return self._enrich_banned_messages(messages)
 
-    def list_banned_messages_public(self, phone: Optional[str], email: Optional[str]) -> list[dict]:
+    def list_banned_messages_public(self, phone: Optional[str], email: Optional[str], channel: Optional[str] = None) -> list[dict]:
         query = self.db.query(BannedUserMessage)
         if phone and email:
             query = query.filter(
@@ -277,6 +287,8 @@ class SupportService:
             query = query.filter(BannedUserMessage.user_phone == phone)
         elif email:
             query = query.filter(BannedUserMessage.user_email == email)
+        if channel:
+            query = query.filter(BannedUserMessage.channel == channel)
 
         messages = query.order_by(BannedUserMessage.created_at.desc()).all()
         return self._enrich_banned_messages(messages)
@@ -304,6 +316,34 @@ class SupportService:
         self.db.refresh(message)
         return self._enrich_banned_message(message)
 
+    def delete_banned_conversation(
+        self,
+        user_id: Optional[int] = None,
+        phone: Optional[str] = None,
+        email: Optional[str] = None,
+        channel: Optional[str] = None,
+    ) -> int:
+        if not user_id and not phone and not email:
+            raise ValueError("Identifiant requis pour supprimer la conversation")
+
+        query = self.db.query(BannedUserMessage)
+        if channel:
+            query = query.filter(BannedUserMessage.channel == channel)
+        if user_id:
+            query = query.filter(BannedUserMessage.user_id == user_id)
+        elif phone and email:
+            query = query.filter(
+                (BannedUserMessage.user_phone == phone) | (BannedUserMessage.user_email == email)
+            )
+        elif phone:
+            query = query.filter(BannedUserMessage.user_phone == phone)
+        elif email:
+            query = query.filter(BannedUserMessage.user_email == email)
+
+        deleted = query.delete(synchronize_session=False)
+        self.db.commit()
+        return deleted
+
     def _enrich_banned_messages(self, messages: list[BannedUserMessage]) -> list[dict]:
         user_ids = {message.user_id for message in messages if message.user_id}
         users = []
@@ -319,7 +359,7 @@ class SupportService:
     ) -> dict:
         meta = message.meta_payload or {}
         user = user_lookup.get(message.user_id) if user_lookup and message.user_id else None
-        if user is None and not message.user_id:
+        if user is None and not message.user_id and message.channel != "guest":
             user = self._resolve_user_by_contact(message.user_phone, message.user_email)
 
         current_status = None

@@ -45,6 +45,16 @@ export const supportService = {
     }
   },
 
+  async deleteThread(threadId: number): Promise<{ success: boolean; message: string }> {
+    try {
+      const response = await api.delete(`/support/threads/${threadId}`);
+      return response.data;
+    } catch (error) {
+      console.error('❌ [supportService] Suppression conversation échouée', error);
+      throw error;
+    }
+  },
+
   async sendMessage(threadId: number, payload: SupportMessagePayload): Promise<SupportMessage> {
     try {
       const response = await api.post(`/support/threads/${threadId}/messages`, {
@@ -82,10 +92,17 @@ export const supportService = {
     }
   },
 
-  async getBannedMessages(status?: string): Promise<BannedMessage[]> {
+  async getBannedMessages(status?: string, channel?: string): Promise<BannedMessage[]> {
     try {
+      const params: Record<string, string> = {};
+      if (status && status !== 'all') {
+        params.status = status;
+      }
+      if (channel) {
+        params.channel = channel;
+      }
       const response = await api.get('/support/banned-messages', {
-        params: status && status !== 'all' ? { status } : undefined,
+        params: Object.keys(params).length ? params : undefined,
       });
       return response.data;
     } catch (error) {
@@ -102,6 +119,21 @@ export const supportService = {
       return response.data;
     } catch (error) {
       console.error('❌ [supportService] Réponse bannie échouée', error);
+      throw error;
+    }
+  },
+
+  async deleteBannedConversation(payload: {
+    user_id?: number | null;
+    user_phone?: string | null;
+    user_email?: string | null;
+    channel?: string | null;
+  }): Promise<{ success: boolean; deleted: number }> {
+    try {
+      const response = await api.delete('/support/banned-messages/conversation', { data: payload });
+      return response.data;
+    } catch (error) {
+      console.error('❌ [supportService] Suppression conversation bannie échouée', error);
       throw error;
     }
   },

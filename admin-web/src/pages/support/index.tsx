@@ -18,7 +18,7 @@ import {
 
 type BannedFilter = 'pending' | 'responded' | 'all';
 type ModerationAction = 'deactivate' | 'ban' | 'delete' | null;
-type SupportMode = 'banned' | 'threads';
+type SupportMode = 'banned' | 'threads' | 'guests';
 
 type ChatItem = {
   id: string;
@@ -39,6 +39,13 @@ export default function SupportCommandCenter() {
   const [respondingMessage, setRespondingMessage] = useState<BannedMessage | null>(null);
   const [responseDraft, setResponseDraft] = useState('');
   const [responding, setResponding] = useState(false);
+  const [deletingConversation, setDeletingConversation] = useState(false);
+
+  const [guestMessages, setGuestMessages] = useState<BannedMessage[]>([]);
+  const [guestFilter, setGuestFilter] = useState<BannedFilter>('pending');
+  const [guestLoading, setGuestLoading] = useState(false);
+  const [pendingGuestCount, setPendingGuestCount] = useState(0);
+  const [selectedGuestKey, setSelectedGuestKey] = useState<string | null>(null);
 
   const [threads, setThreads] = useState<SupportThreadListItem[]>([]);
   const [threadsLoading, setThreadsLoading] = useState(false);
@@ -62,6 +69,12 @@ export default function SupportCommandCenter() {
   }, [bannedFilter]);
 
   useEffect(() => {
+    if (supportMode === 'guests') {
+      loadGuestMessages(guestFilter);
+    }
+  }, [supportMode, guestFilter]);
+
+  useEffect(() => {
     if (supportMode === 'threads') {
       loadThreads(true);
     }
@@ -72,7 +85,7 @@ export default function SupportCommandCenter() {
       setBannedLoading(true);
     }
     try {
-      const data = await supportService.getBannedMessages(filter === 'all' ? undefined : filter);
+      const data = await supportService.getBannedMessages(filter === 'all' ? undefined : filter, 'mobile_app');
       setBannedMessages(data);
       setPendingBannedCount(
         filter === 'responded'
@@ -85,6 +98,28 @@ export default function SupportCommandCenter() {
     } finally {
       if (!silent) {
         setBannedLoading(false);
+      }
+    }
+  };
+
+  const loadGuestMessages = async (filter: BannedFilter, silent = false) => {
+    if (!silent) {
+      setGuestLoading(true);
+    }
+    try {
+      const data = await supportService.getBannedMessages(filter === 'all' ? undefined : filter, 'guest');
+      setGuestMessages(data);
+      setPendingGuestCount(
+        filter === 'responded'
+          ? 0
+          : data.filter((item) => (item.status || 'pending') !== 'responded').length,
+      );
+    } catch (error) {
+      console.error(error);
+      toast.error('Impossible de charger les messages invités.');
+    } finally {
+      if (!silent) {
+        setGuestLoading(false);
       }
     }
   };
@@ -123,6 +158,13 @@ export default function SupportCommandCenter() {
       const detail = await supportService.getThreadById(threadId);
       setSelectedThread(detail);
       setSelectedThreadId(threadId);
+      setThreads((prev) =>
+        prev.map((thread) =>
+          thread.id === threadId
+            ? { ...thread, unread_admin_count: 0, last_message_at: detail.last_message_at }
+            : thread,
+        ),
+      );
     } catch (error) {
       console.error(error);
       toast.error('Conversation introuvable.');
@@ -132,6 +174,33 @@ export default function SupportCommandCenter() {
   const openResponseModal = (message: BannedMessage) => {
     setRespondingMessage(message);
     setResponseDraft(message.admin_response || '');
+  };
+
+  const confirmDeleteConversation = async (options: {
+    channel: 'mobile_app' | 'guest';
+    user_id?: number | null;
+    user_phone?: string | null;
+    user_email?: string | null;
+  }) => {
+    if (deletingConversation) return;
+    if (!window.confirm('Supprimer définitivement cette conversation ?')) {
+      return;
+    }
+    setDeletingConversation(true);
+    try {
+      await supportService.deleteBannedConversation(options);
+      toast.success('Conversation supprimée');
+      if (options.channel === 'guest') {
+        await loadGuestMessages(guestFilter);
+      } else {
+        await loadBannedMessages(bannedFilter);
+      }
+    } catch (error) {
+      console.error(error);
+      toast.error('Suppression impossible.');
+    } finally {
+      setDeletingConversation(false);
+    }
   };
 
   const submitBannedResponse = async () => {
@@ -195,6 +264,26 @@ export default function SupportCommandCenter() {
       toast.error('Impossible d’envoyer la réponse.');
     } finally {
       setSendingThreadReply(false);
+    }
+  };
+
+  const deleteThreadConversation = async (threadId: number) => {
+    if (deletingConversation) return;
+    if (!window.confirm('Supprimer définitivement cette conversation ?')) {
+      return;
+    }
+    setDeletingConversation(true);
+    try {
+      await supportService.deleteThread(threadId);
+      toast.success('Conversation supprimée');
+      setSelectedThread(null);
+      setSelectedThreadId(null);
+      await loadThreads();
+    } catch (error) {
+      console.error(error);
+      toast.error('Suppression impossible.');
+    } finally {
+      setDeletingConversation(false);
     }
   };
 
@@ -364,12 +453,72 @@ export default function SupportCommandCenter() {
       .sort((a, b) => new Date(b.lastMessage.created_at).getTime() - new Date(a.lastMessage.created_at).getTime());
   }, [bannedMessages]);
 
+  const guestUsers = useMemo(() => {
+    const grouped = new Map<
+      string,
+      {
+        key: string;
+        label: string;
+        contact: string;
+        messages: BannedMessage[];
+        lastMessage: BannedMessage;
+        pendingCount: number;
+      }
+    >();
+
+    guestMessages.forEach((message) => {
+      const contact =
+        message.user_phone ||
+        message.user_email ||
+        (message.user_id ? `Utilisateur #${message.user_id}` : 'Contact invité');
+      const key =
+        message.user_phone ||
+        message.user_email ||
+        (message.user_id ? `user:${message.user_id}` : `msg:${message.id}`);
+      const existing = grouped.get(key);
+      if (!existing) {
+        grouped.set(key, {
+          key,
+          label: contact,
+          contact,
+          messages: [message],
+          lastMessage: message,
+          pendingCount: (message.status || 'pending') !== 'responded' ? 1 : 0,
+        });
+      } else {
+        existing.messages.push(message);
+        if (new Date(message.created_at).getTime() > new Date(existing.lastMessage.created_at).getTime()) {
+          existing.lastMessage = message;
+        }
+        if ((message.status || 'pending') !== 'responded') {
+          existing.pendingCount += 1;
+        }
+      }
+    });
+
+    return Array.from(grouped.values())
+      .map((entry) => ({
+        ...entry,
+        messages: entry.messages.sort(
+          (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+        ),
+      }))
+      .sort((a, b) => new Date(b.lastMessage.created_at).getTime() - new Date(a.lastMessage.created_at).getTime());
+  }, [guestMessages]);
+
   const selectedBanned = useMemo(() => {
     if (!selectedBannedKey) {
       return null;
     }
     return bannedUsers.find((item) => item.key === selectedBannedKey) || null;
   }, [bannedUsers, selectedBannedKey]);
+
+  const selectedGuest = useMemo(() => {
+    if (!selectedGuestKey) {
+      return null;
+    }
+    return guestUsers.find((item) => item.key === selectedGuestKey) || null;
+  }, [guestUsers, selectedGuestKey]);
 
   useEffect(() => {
     if (!bannedUsers.length) {
@@ -380,6 +529,16 @@ export default function SupportCommandCenter() {
       setSelectedBannedKey(bannedUsers[0].key);
     }
   }, [bannedUsers, selectedBannedKey]);
+
+  useEffect(() => {
+    if (!guestUsers.length) {
+      setSelectedGuestKey(null);
+      return;
+    }
+    if (!selectedGuestKey || !guestUsers.some((item) => item.key === selectedGuestKey)) {
+      setSelectedGuestKey(guestUsers[0].key);
+    }
+  }, [guestUsers, selectedGuestKey]);
 
   const moderationContext = useMemo(() => {
     if (!selectedBanned?.messages?.length) {
@@ -419,6 +578,37 @@ export default function SupportCommandCenter() {
       });
   }, [selectedBanned?.messages]);
 
+  const guestChatItems = useMemo<ChatItem[]>(() => {
+    if (!selectedGuest?.messages?.length) {
+      return [];
+    }
+    return selectedGuest.messages
+      .slice()
+      .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
+      .flatMap((message) => {
+        const items: ChatItem[] = [
+          {
+            id: `guest-user-${message.id}`,
+            role: 'user',
+            text: message.message,
+            at: message.created_at,
+            status: message.status || 'pending',
+            messageRef: message,
+          },
+        ];
+        if (message.admin_response) {
+          items.push({
+            id: `guest-admin-${message.id}`,
+            role: 'admin',
+            text: message.admin_response,
+            at: message.responded_at || message.created_at,
+            status: 'responded',
+          });
+        }
+        return items;
+      });
+  }, [selectedGuest?.messages]);
+
   const latestBannedMessage = useMemo(() => {
     if (!selectedBanned?.messages?.length) return null;
     return selectedBanned.messages
@@ -433,6 +623,21 @@ export default function SupportCommandCenter() {
       .slice()
       .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
   }, [selectedBanned?.messages]);
+
+  const latestGuestMessage = useMemo(() => {
+    if (!selectedGuest?.messages?.length) return null;
+    return selectedGuest.messages
+      .slice()
+      .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
+  }, [selectedGuest?.messages]);
+
+  const latestPendingGuestMessage = useMemo(() => {
+    if (!selectedGuest?.messages?.length) return null;
+    return selectedGuest.messages
+      .filter((msg) => (msg.status || 'pending') !== 'responded')
+      .slice()
+      .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
+  }, [selectedGuest?.messages]);
 
   const threadChatItems = useMemo<ChatItem[]>(() => {
     if (!selectedThread?.messages?.length) {
@@ -459,7 +664,7 @@ export default function SupportCommandCenter() {
       accent: 'from-rose-500/40 via-red-400/30 to-purple-400/30',
     },
     {
-      label: 'Contacts suivis',
+      label: 'Contacts bannis',
       value: bannedUsers.length.toString(),
       sub: 'Conversations actives',
       icon: AlertTriangle,
@@ -478,6 +683,13 @@ export default function SupportCommandCenter() {
       sub: 'Comptes authentifiés',
       icon: Inbox,
       accent: 'from-slate-500/40 via-slate-400/30 to-slate-300/30',
+    },
+    {
+      label: 'Invités',
+      value: guestUsers.length.toString(),
+      sub: 'Contacts non connectés',
+      icon: Mail,
+      accent: 'from-emerald-500/40 via-teal-400/30 to-cyan-400/30',
     },
   ];
 
@@ -505,7 +717,7 @@ export default function SupportCommandCenter() {
                 ))}
               </div>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 flex-1">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 flex-1">
               {heroMetrics.map((metric) => (
                 <div
                   key={metric.label}
@@ -523,7 +735,15 @@ export default function SupportCommandCenter() {
           </div>
           <div className="mt-8 flex flex-wrap items-center gap-3">
             <button
-              onClick={() => loadBannedMessages(bannedFilter)}
+              onClick={() => {
+                if (supportMode === 'threads') {
+                  loadThreads();
+                } else if (supportMode === 'guests') {
+                  loadGuestMessages(guestFilter);
+                } else {
+                  loadBannedMessages(bannedFilter);
+                }
+              }}
               className="ml-auto inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white/10 text-white text-sm font-medium border border-white/20 hover:bg-white/20"
             >
               <RefreshCw className="w-4 h-4" />
@@ -557,6 +777,16 @@ export default function SupportCommandCenter() {
                 >
                   Utilisateurs actifs
                 </button>
+                <button
+                  onClick={() => setSupportMode('guests')}
+                  className={`px-3 py-1 rounded-full text-xs font-semibold border ${
+                    supportMode === 'guests'
+                      ? 'bg-emerald-600 text-white border-emerald-600'
+                      : 'bg-white text-emerald-700 border-emerald-200'
+                  }`}
+                >
+                  Invités
+                </button>
               </div>
             </div>
 
@@ -583,6 +813,38 @@ export default function SupportCommandCenter() {
                         bannedFilter === option
                           ? 'bg-rose-600 text-white border-rose-600'
                           : 'bg-white text-rose-700 border-rose-200'
+                      }`}
+                    >
+                      {option === 'pending' ? 'En attente' : option === 'responded' ? 'Répondu' : 'Tous'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {supportMode === 'guests' && (
+              <div className="rounded-2xl border border-emerald-100 bg-white shadow-sm p-4">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-semibold text-emerald-900 flex items-center gap-2">
+                    <Mail className="w-4 h-4" />
+                    Messages invités
+                  </p>
+                  <button
+                    onClick={() => loadGuestMessages(guestFilter)}
+                    className="inline-flex items-center gap-2 text-xs text-emerald-700"
+                  >
+                    <RefreshCw className="w-3 h-3" /> Rafraîchir
+                  </button>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 mt-3">
+                  {(['pending', 'responded', 'all'] as BannedFilter[]).map((option) => (
+                    <button
+                      key={option}
+                      onClick={() => setGuestFilter(option)}
+                      className={`px-3 py-1 rounded-full text-xs font-semibold border ${
+                        guestFilter === option
+                          ? 'bg-emerald-600 text-white border-emerald-600'
+                          : 'bg-white text-emerald-700 border-emerald-200'
                       }`}
                     >
                       {option === 'pending' ? 'En attente' : option === 'responded' ? 'Répondu' : 'Tous'}
@@ -629,15 +891,86 @@ export default function SupportCommandCenter() {
                   >
                     <div className="flex items-center justify-between gap-2">
                       <p className="text-sm font-semibold text-slate-900 truncate">{user.label}</p>
-                      {user.pendingCount > 0 && (
-                        <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-rose-100 text-rose-700">
-                          {user.pendingCount} en attente
-                        </span>
-                      )}
+                      <div className="flex items-center gap-2">
+                        {user.pendingCount > 0 && (
+                          <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-rose-100 text-rose-700">
+                            {user.pendingCount} en attente
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            confirmDeleteConversation({
+                              channel: 'mobile_app',
+                              user_id: user.userId ?? undefined,
+                              user_phone: user.phone ?? undefined,
+                              user_email: user.messages[0]?.user_email ?? undefined,
+                            });
+                          }}
+                          className="text-xs text-rose-500 hover:text-rose-700"
+                          title="Supprimer la conversation"
+                        >
+                          🗑️
+                        </button>
+                      </div>
                     </div>
                     <p className="text-xs text-slate-500 mt-1 truncate">{user.lastMessage.message}</p>
                     <div className="flex items-center gap-2 mt-2">
                       {user.status && accountStatusBadge(user.status)}
+                      <span className="text-[11px] text-slate-400">
+                        {formattedRelative(user.lastMessage.created_at)}
+                      </span>
+                    </div>
+                  </button>
+                ))}
+
+                {supportMode === 'guests' && guestLoading && (
+                  <div className="p-6 text-center text-sm text-slate-500">Chargement...</div>
+                )}
+                {supportMode === 'guests' && !guestLoading && !guestUsers.length && (
+                  <div className="p-6 text-center text-sm text-slate-500">
+                    Aucun message invité pour ce filtre.
+                  </div>
+                )}
+                {supportMode === 'guests' && guestUsers.map((user) => (
+                  <button
+                    key={user.key}
+                    onClick={() => setSelectedGuestKey(user.key)}
+                    className={`w-full text-left px-4 py-3 transition ${
+                      selectedGuestKey === user.key
+                        ? 'bg-emerald-50/80 border-l-4 border-emerald-500'
+                        : 'hover:bg-slate-50'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-semibold text-slate-900 truncate">{user.label}</p>
+                      <div className="flex items-center gap-2">
+                        {user.pendingCount > 0 && (
+                          <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700">
+                            {user.pendingCount} en attente
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            confirmDeleteConversation({
+                              channel: 'guest',
+                              user_id: user.messages[0]?.user_id ?? undefined,
+                              user_phone: user.messages[0]?.user_phone ?? undefined,
+                              user_email: user.messages[0]?.user_email ?? undefined,
+                            });
+                          }}
+                          className="text-xs text-emerald-500 hover:text-emerald-700"
+                          title="Supprimer la conversation"
+                        >
+                          🗑️
+                        </button>
+                      </div>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-1 truncate">{user.lastMessage.message}</p>
+                    <div className="flex items-center gap-2 mt-2">
                       <span className="text-[11px] text-slate-400">
                         {formattedRelative(user.lastMessage.created_at)}
                       </span>
@@ -667,11 +1000,24 @@ export default function SupportCommandCenter() {
                       <p className="text-sm font-semibold text-slate-900 truncate">
                         {thread.user_phone || thread.user_email || `Utilisateur #${thread.user_id || thread.id}`}
                       </p>
-                      {!!thread.unread_admin_count && thread.unread_admin_count > 0 && (
-                        <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-slate-900 text-white">
-                          {thread.unread_admin_count} non lus
-                        </span>
-                      )}
+                      <div className="flex items-center gap-2">
+                        {!!thread.unread_admin_count && thread.unread_admin_count > 0 && (
+                          <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-slate-900 text-white">
+                            {thread.unread_admin_count} non lus
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            deleteThreadConversation(thread.id);
+                          }}
+                          className="text-xs text-slate-500 hover:text-slate-700"
+                          title="Supprimer la conversation"
+                        >
+                          🗑️
+                        </button>
+                      </div>
                     </div>
                     <p className="text-xs text-slate-500 mt-1 truncate">
                       {thread.reference} • {thread.subject || 'Conversation support'}
@@ -946,6 +1292,103 @@ export default function SupportCommandCenter() {
                     >
                       <Send className="w-4 h-4" />
                       {sendingThreadReply ? 'Envoi...' : 'Envoyer'}
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {supportMode === 'guests' && guestLoading && (
+              <div className="flex flex-col items-center justify-center h-64 text-slate-500 gap-3">
+                <div className="w-12 h-12 rounded-full border-4 border-slate-200 border-t-emerald-500 animate-spin" />
+                <p>Chargement des messages invités...</p>
+              </div>
+            )}
+
+            {supportMode === 'guests' && !guestLoading && !selectedGuest && (
+              <div className="flex flex-col items-center justify-center h-64 text-center text-slate-500 gap-3">
+                <Inbox className="w-10 h-10" />
+                <p>Sélectionnez un contact invité pour afficher la conversation.</p>
+              </div>
+            )}
+
+            {supportMode === 'guests' && !guestLoading && selectedGuest && (
+              <>
+                <div className="flex flex-wrap items-start gap-4 justify-between">
+                  <div className="space-y-1">
+                    <p className="text-xs uppercase text-slate-400 tracking-wide">Conversation invitée</p>
+                    <h2 className="text-2xl font-semibold text-slate-900">{selectedGuest.label}</h2>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="px-3 py-1 text-xs font-semibold rounded-full bg-emerald-100 text-emerald-700">
+                        Invité
+                      </span>
+                      <span className="text-xs text-slate-400">
+                        Dernier message {formattedRelative(selectedGuest.lastMessage.created_at)}
+                      </span>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => loadGuestMessages(guestFilter)}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-emerald-200 text-sm text-emerald-700 hover:border-emerald-400"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                    Rafraîchir
+                  </button>
+                </div>
+
+                <div className="space-y-4 max-h-[420px] overflow-y-auto pr-1">
+                  {guestChatItems.map((item) => (
+                    <div
+                      key={item.id}
+                      className={`rounded-2xl border p-4 max-w-[80%] ${
+                        item.role === 'admin'
+                          ? 'ml-auto bg-emerald-50 border-emerald-100'
+                          : 'bg-white border-slate-100'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-slate-700">
+                          {item.role === 'admin' ? 'Booms' : 'Invité'}
+                        </span>
+                        <span className="text-xs text-slate-400">{formattedRelative(item.at)}</span>
+                      </div>
+                      <p className="text-sm text-slate-700 mt-2 whitespace-pre-line">{item.text}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs uppercase text-emerald-600">Répondre (invité)</p>
+                    <span className="text-[11px] text-emerald-600">
+                      {latestPendingGuestMessage
+                        ? 'Message en attente'
+                        : latestGuestMessage
+                          ? 'Dernier message sélectionné'
+                          : 'Aucun message'}
+                    </span>
+                  </div>
+                  <textarea
+                    value={responseDraft}
+                    onChange={(event) => setResponseDraft(event.target.value)}
+                    className="w-full min-h-[140px] rounded-2xl border border-emerald-200 focus:ring-2 focus:ring-emerald-200 focus:border-emerald-400 text-sm p-4"
+                    placeholder="Rédigez une réponse..."
+                  />
+                  <div className="flex items-center justify-end">
+                    <button
+                      onClick={() => {
+                        const target = latestPendingGuestMessage || latestGuestMessage;
+                        if (!target) {
+                          toast.warning('Aucun message à traiter.');
+                          return;
+                        }
+                        sendQuickBannedResponse(target);
+                      }}
+                      disabled={responding || !responseDraft.trim() || !(latestPendingGuestMessage || latestGuestMessage)}
+                      className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-emerald-600 text-white text-sm font-semibold disabled:opacity-40"
+                    >
+                      <Send className="w-4 h-4" />
+                      {responding ? 'Envoi...' : 'Envoyer'}
                     </button>
                   </div>
                 </div>

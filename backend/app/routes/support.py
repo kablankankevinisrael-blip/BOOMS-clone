@@ -37,6 +37,13 @@ class SupportModerationRequest(BaseModel):
     duration_hours: Optional[int] = Field(default=None, ge=1, le=720)
 
 
+class SupportConversationDeleteRequest(BaseModel):
+    user_id: Optional[int] = None
+    user_phone: Optional[str] = None
+    user_email: Optional[str] = None
+    channel: Optional[str] = None
+
+
 def get_optional_user(request: Request, db: Session = Depends(get_db)) -> Optional[User]:
     """Autoriser les requêtes publiques tout en utilisant le token si présent."""
     auth_header = request.headers.get("Authorization")
@@ -103,6 +110,23 @@ def get_thread(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@router.delete("/threads/{thread_id}", response_model=dict)
+def delete_thread(
+    thread_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Accès administrateur requis")
+
+    service = SupportService(db)
+    try:
+        service.delete_thread(thread_id)
+        return {"success": True, "message": "Conversation supprimée"}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.post("/threads/{thread_id}/messages", response_model=SupportMessageResponse)
 def post_message(
     thread_id: int,
@@ -162,6 +186,7 @@ def submit_banned_message(
 @router.get("/banned-messages", response_model=list[BannedMessageResponse])
 def list_banned_messages(
     status_filter: Optional[str] = Query(None, alias="status"),
+    channel: Optional[str] = Query(None, alias="channel"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -169,13 +194,14 @@ def list_banned_messages(
         raise HTTPException(status_code=403, detail="Accès administrateur requis")
 
     service = SupportService(db)
-    return service.list_banned_messages(status_filter)
+    return service.list_banned_messages(status_filter, channel)
 
 
 @router.get("/banned-messages/public", response_model=list[BannedMessageResponse])
 def list_banned_messages_public(
     phone: Optional[str] = Query(None, alias="phone"),
     email: Optional[str] = Query(None, alias="email"),
+    channel: Optional[str] = Query(None, alias="channel"),
     db: Session = Depends(get_db),
 ):
     """Canal public pour récupérer les réponses liées à un téléphone/email."""
@@ -183,7 +209,7 @@ def list_banned_messages_public(
         raise HTTPException(status_code=400, detail="Téléphone ou email requis")
 
     service = SupportService(db)
-    return service.list_banned_messages_public(phone, email)
+    return service.list_banned_messages_public(phone, email, channel)
 
 
 @router.post("/banned-messages/{message_id}/response", response_model=BannedMessageResponse)
@@ -201,6 +227,28 @@ def respond_to_banned_message(
         return service.respond_to_banned_message(message_id, payload, current_user)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.delete("/banned-messages/conversation", response_model=dict)
+def delete_banned_conversation(
+    payload: SupportConversationDeleteRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Accès administrateur requis")
+
+    service = SupportService(db)
+    try:
+        deleted = service.delete_banned_conversation(
+            user_id=payload.user_id,
+            phone=payload.user_phone,
+            email=payload.user_email,
+            channel=payload.channel,
+        )
+        return {"success": True, "deleted": deleted}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/users/{user_id}/status", response_model=SupportAccountStatusResponse)
