@@ -1,78 +1,43 @@
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'react-toastify';
-import { format, formatDistanceToNow } from 'date-fns';
+import { formatDistanceToNow } from 'date-fns';
 import { fr } from 'date-fns/locale';
 import AdminLayout from '@/components/Layout/AdminLayout';
 import { supportService } from '@/services/support';
+import { AccountStatus, BannedMessage } from '@/types';
 import {
-  AccountStatus,
-  BannedMessage,
-  SuggestedMessage,
-  SupportPriority,
-  SupportThreadDetail,
-  SupportThreadListItem,
-  SupportThreadStatus,
-} from '@/types';
-import {
-  MessageSquare,
-  ShieldAlert,
   AlertTriangle,
+  Inbox,
+  LayoutGrid,
+  Mail,
   RefreshCw,
   Send,
-  Filter,
-  Clock,
-  UserCheck,
-  Mail,
-  LayoutGrid,
+  ShieldAlert,
   X,
-  Sparkles,
-  Inbox,
-  Headphones,
-  AlertCircle,
 } from 'lucide-react';
 
-const statusFilterOptions: Array<{ label: string; value: SupportThreadStatus | 'all' }> = [
-  { label: 'Tous', value: 'all' },
-  { label: 'Ouverts', value: 'open' },
-  { label: 'En cours', value: 'pending' },
-  { label: 'En attente client', value: 'waiting_user' },
-  { label: 'Résolus', value: 'resolved' },
-  { label: 'Escaladés', value: 'escalated' },
-];
-
-const priorityOptions: Array<{ label: string; value: SupportPriority | 'all' }> = [
-  { label: 'Toutes', value: 'all' },
-  { label: 'Normales', value: 'normal' },
-  { label: 'Haute', value: 'high' },
-  { label: 'Urgente', value: 'urgent' },
-];
-
-type ViewMode = 'threads' | 'banned';
 type BannedFilter = 'pending' | 'responded' | 'all';
 type ModerationAction = 'deactivate' | 'ban' | 'delete' | null;
 
+type ChatItem = {
+  id: string;
+  role: 'user' | 'admin';
+  text: string;
+  at: string;
+  status?: string;
+  messageRef?: BannedMessage;
+};
+
 export default function SupportCommandCenter() {
-  const [view, setView] = useState<ViewMode>('threads');
-  const [statusFilter, setStatusFilter] = useState<SupportThreadStatus | 'all'>('open');
-  const [priorityFilter, setPriorityFilter] = useState<SupportPriority | 'all'>('all');
-  const [threads, setThreads] = useState<SupportThreadListItem[]>([]);
-  const [threadsLoading, setThreadsLoading] = useState(true);
-  const [threadError, setThreadError] = useState<string | null>(null);
-  const [selectedThreadId, setSelectedThreadId] = useState<number | null>(null);
-  const [selectedThread, setSelectedThread] = useState<SupportThreadDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [messageBody, setMessageBody] = useState('');
-  const [isInternalNote, setIsInternalNote] = useState(false);
-  const [templates, setTemplates] = useState<SuggestedMessage[]>([]);
   const [bannedMessages, setBannedMessages] = useState<BannedMessage[]>([]);
   const [bannedFilter, setBannedFilter] = useState<BannedFilter>('pending');
   const [bannedLoading, setBannedLoading] = useState(false);
   const [pendingBannedCount, setPendingBannedCount] = useState(0);
+  const [selectedBannedKey, setSelectedBannedKey] = useState<string | null>(null);
   const [respondingMessage, setRespondingMessage] = useState<BannedMessage | null>(null);
   const [responseDraft, setResponseDraft] = useState('');
   const [responding, setResponding] = useState(false);
 
-  // Moderation states
   const [moderationUser, setModerationUser] = useState<{ id: number; phone?: string } | null>(null);
   const [moderationAction, setModerationAction] = useState<ModerationAction>(null);
   const [moderationReason, setModerationReason] = useState('');
@@ -80,71 +45,12 @@ export default function SupportCommandCenter() {
   const [accountStatus, setAccountStatus] = useState<AccountStatus | null>(null);
 
   useEffect(() => {
-    supportService.getTemplates().then(setTemplates);
-    loadBannedMessages('pending', true); // Pré-charger le volume pour les métriques
+    loadBannedMessages('pending', true);
   }, []);
 
   useEffect(() => {
-    if (view === 'threads') {
-      loadThreads();
-    }
-  }, [view, statusFilter, priorityFilter]);
-
-  useEffect(() => {
-    if (view === 'banned') {
-      loadBannedMessages(bannedFilter);
-    }
-  }, [view, bannedFilter]);
-
-  useEffect(() => {
-    if (!selectedThreadId) {
-      setSelectedThread(null);
-      return;
-    }
-    loadThreadDetail(selectedThreadId);
-  }, [selectedThreadId]);
-
-  const loadThreads = async () => {
-    setThreadsLoading(true);
-    setThreadError(null);
-    try {
-      const data = await supportService.getThreads({
-        scope: 'all',
-        status: statusFilter === 'all' ? undefined : statusFilter,
-        priority: priorityFilter === 'all' ? undefined : priorityFilter,
-      });
-      setThreads(data);
-
-      if (!data.length) {
-        setSelectedThreadId(null);
-        return;
-      }
-
-      const stillVisible = data.some((thread) => thread.id === selectedThreadId);
-      if (!stillVisible) {
-        setSelectedThreadId(data[0].id);
-      }
-    } catch (error) {
-      console.error(error);
-      setThreadError("Impossible de charger les tickets");
-      toast.error('Le centre de support est indisponible.');
-    } finally {
-      setThreadsLoading(false);
-    }
-  };
-
-  const loadThreadDetail = async (threadId: number) => {
-    setDetailLoading(true);
-    try {
-      const detail = await supportService.getThreadById(threadId);
-      setSelectedThread(detail);
-    } catch (error) {
-      console.error(error);
-      toast.error('Ticket introuvable ou accès refusé.');
-    } finally {
-      setDetailLoading(false);
-    }
-  };
+    loadBannedMessages(bannedFilter);
+  }, [bannedFilter]);
 
   const loadBannedMessages = async (filter: BannedFilter, silent = false) => {
     if (!silent) {
@@ -165,45 +71,6 @@ export default function SupportCommandCenter() {
       if (!silent) {
         setBannedLoading(false);
       }
-    }
-  };
-
-  const handleSendMessage = async () => {
-    if (!selectedThread || !messageBody.trim()) {
-      return;
-    }
-    try {
-      await supportService.sendMessage(selectedThread.id, {
-        message: messageBody.trim(),
-        is_internal: isInternalNote,
-      });
-      setMessageBody('');
-      setIsInternalNote(false);
-      toast.success('Message envoyé');
-      await loadThreadDetail(selectedThread.id);
-      await loadThreads();
-    } catch (error) {
-      console.error(error);
-      toast.error("Impossible d'envoyer le message");
-    }
-  };
-
-  const handleStatusChange = async (status: SupportThreadStatus, reason?: string) => {
-    if (!selectedThread) {
-      return;
-    }
-    try {
-      const updated = await supportService.updateThreadStatus(selectedThread.id, {
-        status,
-        reason,
-        notify_user: status !== 'waiting_user',
-      });
-      setSelectedThread(updated);
-      toast.success('Statut mis à jour');
-      await loadThreads();
-    } catch (error) {
-      console.error(error);
-      toast.error('Mise à jour du statut impossible');
     }
   };
 
@@ -232,11 +99,6 @@ export default function SupportCommandCenter() {
     }
   };
 
-  const insertTemplate = (template: string) => {
-    setMessageBody((prev) => (prev ? `${prev}\n\n${template}` : template));
-  };
-
-  // ===== MODERATION ACTIONS =====
   const openModerationModal = (action: ModerationAction, userId: number, phone?: string) => {
     setModerationUser({ id: userId, phone });
     setModerationAction(action);
@@ -273,22 +135,18 @@ export default function SupportCommandCenter() {
         toast.success('Utilisateur complètement supprimé');
       }
 
-      // Refresh data
       setModerationUser(null);
       setModerationAction(null);
-      if (selectedThreadId) {
-        await loadThreadDetail(selectedThreadId);
-      }
-      await loadThreads();
+      await loadBannedMessages(bannedFilter);
     } catch (error) {
       console.error(error);
-      toast.error('Erreur lors de l\'action de modération');
+      toast.error("Erreur lors de l'action de modération");
     } finally {
       setIsModerating(false);
     }
   };
 
-  const accountStatusBadge = (status?: AccountStatus) => {
+  const accountStatusBadge = (status?: AccountStatus | null) => {
     if (!status) return null;
 
     const map: Record<AccountStatus, { label: string; classes: string; icon: string }> = {
@@ -306,60 +164,22 @@ export default function SupportCommandCenter() {
     );
   };
 
-  const messageCountByPriority = useMemo(() => {
-    return threads.reduce(
-      (acc, thread) => {
-        if (thread.priority === 'high' || thread.priority === 'urgent') {
-          acc.high += 1;
-        }
-        if (thread.status === 'escalated') {
-          acc.escalated += 1;
-        }
-        if (thread.status === 'waiting_user') {
-          acc.waiting += 1;
-        }
-        return acc;
-      },
-      { high: 0, escalated: 0, waiting: 0 },
-    );
-  }, [threads]);
+  const accountStatusDescription = (status?: AccountStatus | null) => {
+    if (!status) return null;
 
-  const statusBadge = (status?: SupportThreadStatus) => {
-    if (!status) {
-      return null;
+    if (status === 'inactive') {
+      return 'Désactivation temporaire. L’admin peut réactiver à tout moment.';
     }
-    const map: Record<SupportThreadStatus, { label: string; classes: string }> = {
-      open: { label: 'Ouvert', classes: 'bg-emerald-100 text-emerald-700' },
-      pending: { label: 'En cours', classes: 'bg-blue-100 text-blue-700' },
-      waiting_user: { label: 'Attente client', classes: 'bg-amber-100 text-amber-700' },
-      resolved: { label: 'Résolu', classes: 'bg-teal-100 text-teal-700' },
-      closed: { label: 'Clôturé', classes: 'bg-slate-100 text-slate-600' },
-      escalated: { label: 'Escaladé', classes: 'bg-purple-100 text-purple-700' },
-    };
-    const conf = map[status];
-    return (
-      <span className={`px-3 py-1 text-xs font-semibold rounded-full ${conf.classes}`}>
-        {conf.label}
-      </span>
-    );
-  };
 
-  const priorityBadge = (priority?: SupportPriority) => {
-    if (!priority) {
-      return null;
+    if (status === 'banned') {
+      return 'Bannissement temporaire. Si non réactivé sous 72h, le compte est auto‑supprimé.';
     }
-    const map: Record<SupportPriority, { label: string; classes: string }> = {
-      low: { label: 'Faible', classes: 'bg-slate-100 text-slate-600' },
-      normal: { label: 'Normal', classes: 'bg-gray-200 text-gray-700' },
-      high: { label: 'Élevée', classes: 'bg-orange-100 text-orange-700' },
-      urgent: { label: 'Urgente', classes: 'bg-red-100 text-red-700' },
-    };
-    const conf = map[priority];
-    return (
-      <span className={`px-3 py-1 text-xs font-semibold rounded-full ${conf.classes}`}>
-        {conf.label}
-      </span>
-    );
+
+    if (status === 'deleted') {
+      return 'Compte supprimé définitivement de la base de données.';
+    }
+
+    return 'Compte actif.';
   };
 
   const formattedRelative = (value?: string | null) => {
@@ -373,27 +193,161 @@ export default function SupportCommandCenter() {
     }
   };
 
+  const bannedUsers = useMemo(() => {
+    const grouped = new Map<
+      string,
+      {
+        key: string;
+        label: string;
+        contact: string;
+        messages: BannedMessage[];
+        lastMessage: BannedMessage;
+        pendingCount: number;
+        status?: AccountStatus;
+        userId?: number | null;
+        phone?: string | null;
+      }
+    >();
+
+    const inferStatus = (message: BannedMessage): AccountStatus | undefined => {
+      if (message.current_account_status) {
+        return message.current_account_status;
+      }
+      if (message.action_type === 'inactive') {
+        return 'inactive';
+      }
+      if (message.action_type === 'banned') {
+        return 'banned';
+      }
+      if (message.action_type === 'deleted') {
+        return 'deleted';
+      }
+      return undefined;
+    };
+
+    bannedMessages.forEach((message) => {
+      const contact =
+        message.user_phone ||
+        message.user_email ||
+        (message.user_id ? `Utilisateur #${message.user_id}` : 'Contact inconnu');
+      const key =
+        message.user_phone ||
+        message.user_email ||
+        (message.user_id ? `user:${message.user_id}` : `msg:${message.id}`);
+      const existing = grouped.get(key);
+      const derivedStatus = inferStatus(message);
+      if (!existing) {
+        grouped.set(key, {
+          key,
+          label: contact,
+          contact,
+          messages: [message],
+          lastMessage: message,
+          pendingCount: (message.status || 'pending') !== 'responded' ? 1 : 0,
+          status: derivedStatus,
+          userId: message.user_id,
+          phone: message.user_phone,
+        });
+      } else {
+        existing.messages.push(message);
+        if (new Date(message.created_at).getTime() > new Date(existing.lastMessage.created_at).getTime()) {
+          existing.lastMessage = message;
+          existing.status = derivedStatus || existing.status;
+          existing.userId = message.user_id;
+          existing.phone = message.user_phone;
+        }
+        if ((message.status || 'pending') !== 'responded') {
+          existing.pendingCount += 1;
+        }
+      }
+    });
+
+    return Array.from(grouped.values())
+      .map((entry) => ({
+        ...entry,
+        messages: entry.messages.sort(
+          (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+        ),
+      }))
+      .sort((a, b) => new Date(b.lastMessage.created_at).getTime() - new Date(a.lastMessage.created_at).getTime());
+  }, [bannedMessages]);
+
+  const selectedBanned = useMemo(() => {
+    if (!selectedBannedKey) {
+      return null;
+    }
+    return bannedUsers.find((item) => item.key === selectedBannedKey) || null;
+  }, [bannedUsers, selectedBannedKey]);
+
+  useEffect(() => {
+    if (!bannedUsers.length) {
+      setSelectedBannedKey(null);
+      return;
+    }
+    if (!selectedBannedKey || !bannedUsers.some((item) => item.key === selectedBannedKey)) {
+      setSelectedBannedKey(bannedUsers[0].key);
+    }
+  }, [bannedUsers, selectedBannedKey]);
+
+  const moderationContext = useMemo(() => {
+    if (!selectedBanned?.messages?.length) {
+      return null;
+    }
+    return selectedBanned.messages.find((msg) => msg.action_type) || null;
+  }, [selectedBanned?.messages]);
+
+  const chatItems = useMemo<ChatItem[]>(() => {
+    if (!selectedBanned?.messages?.length) {
+      return [];
+    }
+    return selectedBanned.messages
+      .slice()
+      .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
+      .flatMap((message) => {
+        const items: ChatItem[] = [
+          {
+            id: `user-${message.id}`,
+            role: 'user',
+            text: message.message,
+            at: message.created_at,
+            status: message.status || 'pending',
+            messageRef: message,
+          },
+        ];
+        if (message.admin_response) {
+          items.push({
+            id: `admin-${message.id}`,
+            role: 'admin',
+            text: message.admin_response,
+            at: message.responded_at || message.created_at,
+            status: 'responded',
+          });
+        }
+        return items;
+      });
+  }, [selectedBanned?.messages]);
+
   const heroMetrics = [
-    {
-      label: 'Tickets actifs',
-      value: (threads.filter((t) => ['open', 'pending', 'waiting_user'].includes(t.status)).length || 0).toString(),
-      sub: `${messageCountByPriority.high} prioritaires`,
-      icon: MessageSquare,
-      accent: 'from-blue-500/40 via-blue-400/30 to-cyan-400/30',
-    },
-    {
-      label: 'Escalades',
-      value: messageCountByPriority.escalated.toString(),
-      sub: 'Priorité niveau 2',
-      icon: AlertTriangle,
-      accent: 'from-amber-500/40 via-orange-400/30 to-pink-400/30',
-    },
     {
       label: 'Alertes bannies',
       value: pendingBannedCount.toString(),
       sub: 'En attente de réponse',
       icon: ShieldAlert,
       accent: 'from-rose-500/40 via-red-400/30 to-purple-400/30',
+    },
+    {
+      label: 'Contacts suivis',
+      value: bannedUsers.length.toString(),
+      sub: 'Conversations actives',
+      icon: AlertTriangle,
+      accent: 'from-amber-500/40 via-orange-400/30 to-pink-400/30',
+    },
+    {
+      label: 'Réponses envoyées',
+      value: bannedMessages.filter((item) => (item.status || 'pending') === 'responded').length.toString(),
+      sub: 'Sur l’ensemble du filtre',
+      icon: Mail,
+      accent: 'from-blue-500/40 via-blue-400/30 to-cyan-400/30',
     },
   ];
 
@@ -404,17 +358,17 @@ export default function SupportCommandCenter() {
           <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-8">
             <div className="space-y-4 max-w-2xl">
               <div className="inline-flex items-center space-x-2 text-xs uppercase tracking-[0.35em] text-white/70">
-                <Headphones className="w-4 h-4" />
-                <span>Command Center</span>
+                <ShieldAlert className="w-4 h-4" />
+                <span>Support bannis</span>
               </div>
               <div>
                 <h1 className="text-3xl font-semibold">Support & conformité Booms</h1>
                 <p className="text-white/70 text-sm mt-2">
-                  Pilotage temps-réel des tickets, escalades et alertes envoyées par les comptes bannis.
+                  Pilotage temps-réel des alertes envoyées par les comptes bannis.
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-3">
-                {['SLA 24h', 'Escalade N2', 'Analyse risque'].map((label) => (
+                {['SLA 24h', 'Analyse risque', 'Modération'].map((label) => (
                   <span key={label} className="px-3 py-1 rounded-full bg-white/10 text-xs font-semibold">
                     {label}
                   </span>
@@ -438,23 +392,8 @@ export default function SupportCommandCenter() {
             </div>
           </div>
           <div className="mt-8 flex flex-wrap items-center gap-3">
-            {([
-              { label: 'Tickets', value: 'threads', icon: MessageSquare },
-              { label: 'Alertes bannies', value: 'banned', icon: ShieldAlert },
-            ] as const).map((tab) => (
-              <button
-                key={tab.value}
-                onClick={() => setView(tab.value)}
-                className={`inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold transition-all border border-white/20 backdrop-blur ${
-                  view === tab.value ? 'bg-white text-slate-900' : 'text-white/80 hover:bg-white/10'
-                }`}
-              >
-                <tab.icon className="w-4 h-4" />
-                {tab.label}
-              </button>
-            ))}
             <button
-              onClick={() => (view === 'threads' ? loadThreads() : loadBannedMessages(bannedFilter))}
+              onClick={() => loadBannedMessages(bannedFilter)}
               className="ml-auto inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white/10 text-white text-sm font-medium border border-white/20 hover:bg-white/20"
             >
               <RefreshCw className="w-4 h-4" />
@@ -463,523 +402,229 @@ export default function SupportCommandCenter() {
           </div>
         </section>
 
-        {view === 'threads' ? (
-          <section className="grid gap-6 lg:grid-cols-[360px_minmax(0,1fr)]">
-            {pendingBannedCount > 0 && (
-              <div className="lg:col-span-2 rounded-2xl border border-rose-200 bg-rose-50 px-5 py-4 flex flex-wrap items-center gap-3">
-                <div className="flex items-center gap-2 text-rose-800 font-semibold">
+        <section className="grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
+          <aside className="space-y-4">
+            <div className="rounded-2xl border border-rose-100 bg-white shadow-sm p-4">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-semibold text-rose-900 flex items-center gap-2">
                   <ShieldAlert className="w-4 h-4" />
-                  {pendingBannedCount} alerte{pendingBannedCount > 1 ? 's' : ''} bannie{pendingBannedCount > 1 ? 's' : ''} en attente
-                </div>
-                <p className="text-sm text-rose-700">Consultez les messages envoyés par les comptes bannis.</p>
+                  Alertes bannies
+                </p>
                 <button
-                  onClick={() => {
-                    setBannedFilter('pending');
-                    setView('banned');
-                  }}
-                  className="ml-auto inline-flex items-center gap-2 px-4 py-2 rounded-full bg-rose-600 text-white text-sm font-semibold"
+                  onClick={() => loadBannedMessages(bannedFilter)}
+                  className="inline-flex items-center gap-2 text-xs text-rose-700"
                 >
-                  Voir les alertes
+                  <RefreshCw className="w-3 h-3" /> Rafraîchir
                 </button>
               </div>
-            )}
-            <aside className="space-y-6">
-              <div className="rounded-2xl border border-slate-200 bg-white shadow-sm p-4">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-2">
-                    <Filter className="w-4 h-4 text-slate-500" />
-                    <p className="text-sm font-semibold text-slate-900">Filtrer les tickets</p>
-                  </div>
+              <div className="flex flex-wrap items-center gap-2 mt-3">
+                {(['pending', 'responded', 'all'] as BannedFilter[]).map((option) => (
                   <button
-                    onClick={() => {
-                      setStatusFilter('open');
-                      setPriorityFilter('all');
-                    }}
-                    className="text-xs text-blue-600 hover:underline"
+                    key={option}
+                    onClick={() => setBannedFilter(option)}
+                    className={`px-3 py-1 rounded-full text-xs font-semibold border ${
+                      bannedFilter === option
+                        ? 'bg-rose-600 text-white border-rose-600'
+                        : 'bg-white text-rose-700 border-rose-200'
+                    }`}
                   >
-                    Réinitialiser
+                    {option === 'pending' ? 'En attente' : option === 'responded' ? 'Répondu' : 'Tous'}
                   </button>
-                </div>
-                <div className="space-y-3">
-                  <label className="text-xs font-semibold uppercase text-slate-400">Statut</label>
-                  <div className="flex flex-wrap gap-2">
-                    {statusFilterOptions.map((option) => (
-                      <button
-                        key={option.value}
-                        onClick={() => setStatusFilter(option.value)}
-                        className={`px-3 py-1 rounded-full text-xs font-semibold border transition ${
-                          statusFilter === option.value
-                            ? 'bg-slate-900 text-white border-slate-900'
-                            : 'bg-slate-50 text-slate-600 border-slate-200 hover:border-slate-400'
-                        }`}
-                      >
-                        {option.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div className="space-y-3 mt-6">
-                  <label className="text-xs font-semibold uppercase text-slate-400">Priorité</label>
-                  <div className="flex flex-wrap gap-2">
-                    {priorityOptions.map((option) => (
-                      <button
-                        key={option.value}
-                        onClick={() => setPriorityFilter(option.value)}
-                        className={`px-3 py-1 rounded-full text-xs font-semibold border transition ${
-                          priorityFilter === option.value
-                            ? 'bg-blue-50 text-blue-700 border-blue-200'
-                            : 'bg-white text-slate-600 border-slate-200 hover:border-blue-200'
-                        }`}
-                      >
-                        {option.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                ))}
               </div>
+            </div>
 
-              <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-                <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
-                  <div>
-                    <p className="text-sm font-semibold text-slate-900">Tickets ({threads.length})</p>
-                    <p className="text-xs text-slate-500">Triés par dernière activité</p>
-                  </div>
-                  <LayoutGrid className="w-4 h-4 text-slate-400" />
+            <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+              <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
+                <div>
+                  <p className="text-sm font-semibold text-slate-900">Utilisateurs ({bannedUsers.length})</p>
+                  <p className="text-xs text-slate-500">Organisés par dernière activité</p>
                 </div>
-                <div className="max-h-[calc(100vh-380px)] overflow-y-auto divide-y divide-slate-100">
-                  {threadsLoading && (
-                    <div className="p-6 text-center text-sm text-slate-500">Chargement...</div>
-                  )}
-                  {!threadsLoading && !threads.length && (
-                    <div className="p-6 text-center text-sm text-slate-500">
-                      Aucun ticket ne correspond aux filtres.
-                    </div>
-                  )}
-                  {threads.map((thread) => (
-                    <button
-                      key={thread.id}
-                      onClick={() => setSelectedThreadId(thread.id)}
-                      className={`w-full text-left px-4 py-3 transition ${
-                        selectedThreadId === thread.id
-                          ? 'bg-blue-50/80 border-l-4 border-blue-500'
-                          : 'hover:bg-slate-50'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <p className="text-sm font-semibold text-slate-900 truncate">{thread.subject}</p>
-                        {statusBadge(thread.status as SupportThreadStatus)}
-                      </div>
-                      <p className="text-xs text-slate-500 mt-1">Ref {thread.reference}</p>
-                      <p className="text-xs text-slate-500 mt-1 line-clamp-2">{thread.last_message_preview}</p>
-                      <div className="flex items-center gap-2 mt-2">
-                        {priorityBadge(thread.priority as SupportPriority)}
-                        <span className="text-[11px] text-slate-400">{formattedRelative(thread.last_message_at)}</span>
-                      </div>
-                    </button>
-                  ))}
-                </div>
+                <LayoutGrid className="w-4 h-4 text-slate-400" />
               </div>
-            </aside>
-
-            <section className="rounded-3xl border border-slate-200 bg-white shadow-xl p-6 space-y-6 min-h-[640px]">
-              {detailLoading && (
-                <div className="flex flex-col items-center justify-center h-64 text-slate-500 gap-3">
-                  <div className="w-12 h-12 rounded-full border-4 border-slate-200 border-t-blue-500 animate-spin" />
-                  <p>Chargement du ticket...</p>
-                </div>
-              )}
-
-              {!detailLoading && !selectedThread && (
-                <div className="flex flex-col items-center justify-center h-64 text-center text-slate-500 gap-3">
-                  <Inbox className="w-10 h-10" />
-                  <p>Sélectionnez un ticket pour commencer.</p>
-                </div>
-              )}
-
-              {!detailLoading && selectedThread && (
-                <>
-                  <div className="flex flex-wrap items-start gap-4 justify-between">
-                    <div className="space-y-1">
-                      <p className="text-xs uppercase text-slate-400 tracking-wide">Ticket #{selectedThread.reference}</p>
-                      <h2 className="text-2xl font-semibold text-slate-900">{selectedThread.subject}</h2>
-                      <div className="flex items-center gap-2 flex-wrap">
-                        {statusBadge(selectedThread.status)}
-                        {priorityBadge(selectedThread.priority)}
-                        <span className="text-xs text-slate-400">Créé le {format(new Date(selectedThread.created_at), 'dd MMM yyyy', { locale: fr })}</span>
-                      </div>
-                      {/* User info */}
-                      {(selectedThread.user_phone || selectedThread.user_email) && (
-                        <div className="text-xs text-slate-600 mt-2">
-                          📱 {selectedThread.user_phone || selectedThread.user_email}
-                          {selectedThread.user_full_name && ` · ${selectedThread.user_full_name}`}
-                        </div>
+              <div className="max-h-[calc(100vh-360px)] overflow-y-auto divide-y divide-slate-100">
+                {bannedLoading && (
+                  <div className="p-6 text-center text-sm text-slate-500">Chargement...</div>
+                )}
+                {!bannedLoading && !bannedUsers.length && (
+                  <div className="p-6 text-center text-sm text-slate-500">
+                    Aucune alerte pour ce filtre.
+                  </div>
+                )}
+                {bannedUsers.map((user) => (
+                  <button
+                    key={user.key}
+                    onClick={() => setSelectedBannedKey(user.key)}
+                    className={`w-full text-left px-4 py-3 transition ${
+                      selectedBannedKey === user.key
+                        ? 'bg-rose-50/80 border-l-4 border-rose-500'
+                        : 'hover:bg-slate-50'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm font-semibold text-slate-900 truncate">{user.label}</p>
+                      {user.pendingCount > 0 && (
+                        <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-rose-100 text-rose-700">
+                          {user.pendingCount} en attente
+                        </span>
                       )}
                     </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => loadThreadDetail(selectedThread.id)}
-                        className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-slate-200 text-sm text-slate-600 hover:border-slate-400"
-                      >
-                        <RefreshCw className="w-4 h-4" />
-                        Rafraîchir
-                      </button>
+                    <p className="text-xs text-slate-500 mt-1 truncate">{user.lastMessage.message}</p>
+                    <div className="flex items-center gap-2 mt-2">
+                      {user.status && accountStatusBadge(user.status)}
+                      <span className="text-[11px] text-slate-400">
+                        {formattedRelative(user.lastMessage.created_at)}
+                      </span>
                     </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </aside>
+
+          <section className="rounded-3xl border border-slate-200 bg-white shadow-xl p-6 space-y-6 min-h-[640px]">
+            {bannedLoading && (
+              <div className="flex flex-col items-center justify-center h-64 text-slate-500 gap-3">
+                <div className="w-12 h-12 rounded-full border-4 border-slate-200 border-t-rose-500 animate-spin" />
+                <p>Chargement des alertes...</p>
+              </div>
+            )}
+
+            {!bannedLoading && !selectedBanned && (
+              <div className="flex flex-col items-center justify-center h-64 text-center text-slate-500 gap-3">
+                <Inbox className="w-10 h-10" />
+                <p>Sélectionnez un utilisateur pour afficher la conversation.</p>
+              </div>
+            )}
+
+            {!bannedLoading && selectedBanned && (
+              <>
+                <div className="flex flex-wrap items-start gap-4 justify-between">
+                  <div className="space-y-1">
+                    <p className="text-xs uppercase text-slate-400 tracking-wide">Statut du compte</p>
+                    <h2 className="text-2xl font-semibold text-slate-900">{selectedBanned.label}</h2>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {selectedBanned.status ? (
+                        accountStatusBadge(selectedBanned.status)
+                      ) : (
+                        <span className="px-3 py-1 text-xs font-semibold rounded-full bg-slate-100 text-slate-600">
+                          Statut inconnu
+                        </span>
+                      )}
+                      <span className="text-xs text-slate-400">
+                        Dernier message {formattedRelative(selectedBanned.lastMessage.created_at)}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 max-w-xl">
+                      {accountStatusDescription(selectedBanned.status) || 'Statut non renseigné pour ce compte.'}
+                    </p>
                   </div>
-
-                  {/* Account Status Section */}
-                  {selectedThread.user_account_status && (
-                    <div className={`rounded-2xl border-2 p-4 ${
-                      selectedThread.user_account_status === 'active'
-                        ? 'bg-emerald-50 border-emerald-200'
-                        : selectedThread.user_account_status === 'banned'
-                          ? 'bg-orange-50 border-orange-200'
-                          : selectedThread.user_account_status === 'deleted'
-                            ? 'bg-red-50 border-red-200'
-                            : 'bg-amber-50 border-amber-200'
-                    }`}>
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <AlertCircle className="w-5 h-5" />
-                          <div>
-                            <p className="font-semibold text-sm">Statut du compte</p>
-                            <div className="flex items-center gap-2 mt-1">
-                              {accountStatusBadge(selectedThread.user_account_status as AccountStatus)}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div className="p-4 rounded-2xl bg-slate-50 border border-slate-100">
-                      <p className="text-xs text-slate-500">Catégorie</p>
-                      <p className="font-semibold text-slate-900">{selectedThread.category}</p>
-                    </div>
-                    <div className="p-4 rounded-2xl bg-slate-50 border border-slate-100">
-                      <p className="text-xs text-slate-500">Non lus admin</p>
-                      <p className="font-semibold text-slate-900">{selectedThread.unread_admin_count || 0}</p>
-                    </div>
-                    <div className="p-4 rounded-2xl bg-slate-50 border border-slate-100">
-                      <p className="text-xs text-slate-500">Dernière activité</p>
-                      <p className="font-semibold text-slate-900">{formattedRelative(selectedThread.last_message_at)}</p>
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-slate-100 bg-slate-50 p-4">
-                    <div className="flex items-center gap-2 text-slate-500 text-sm mb-3">
-                      <Sparkles className="w-4 h-4" />
-                      Accélérer ce ticket
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {[{
-                        label: 'Mettre en attente client',
-                        status: 'waiting_user' as SupportThreadStatus,
-                        tone: 'bg-amber-100 text-amber-800 border-amber-200',
-                      }, {
-                        label: 'Escalader',
-                        status: 'escalated' as SupportThreadStatus,
-                        tone: 'bg-purple-100 text-purple-800 border-purple-200',
-                      }, {
-                        label: 'Marquer résolu',
-                        status: 'resolved' as SupportThreadStatus,
-                        tone: 'bg-emerald-100 text-emerald-800 border-emerald-200',
-                      }, {
-                        label: 'Clôturer',
-                        status: 'closed' as SupportThreadStatus,
-                        tone: 'bg-slate-200 text-slate-800 border-slate-300',
-                      }].map((action) => (
+                  <div className="flex items-center gap-2">
+                    {selectedBanned.userId && (
+                      <div className="flex items-center gap-2">
                         <button
-                          key={action.status}
-                          onClick={() => handleStatusChange(action.status)}
-                          className={`px-4 py-3 rounded-2xl border text-sm font-semibold flex items-center justify-between ${action.tone}`}
-                        >
-                          <span>{action.label}</span>
-                          <UserCheck className="w-4 h-4" />
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Moderation Actions */}
-                  {selectedThread.user_id && (
-                    <div className="rounded-2xl border border-rose-100 bg-rose-50 p-4">
-                      <div className="flex items-center gap-2 text-rose-700 text-sm mb-3">
-                        <ShieldAlert className="w-4 h-4" />
-                        Actions de modération
-                      </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                        <button
-                          onClick={() =>
-                            openModerationModal(
-                              'deactivate',
-                              selectedThread.user_id,
-                              selectedThread.user_phone,
-                            )
-                          }
-                          className="px-4 py-3 rounded-2xl border border-amber-200 bg-amber-100 text-amber-800 text-sm font-semibold hover:bg-amber-200 transition"
+                          onClick={() => openModerationModal('deactivate', selectedBanned.userId!, selectedBanned.phone || undefined)}
+                          className="px-3 py-2 rounded-full border border-amber-200 bg-amber-50 text-amber-800 text-xs font-semibold"
                         >
                           ⏸️ Désactiver
                         </button>
                         <button
-                          onClick={() =>
-                            openModerationModal(
-                              'ban',
-                              selectedThread.user_id,
-                              selectedThread.user_phone,
-                            )
-                          }
-                          className="px-4 py-3 rounded-2xl border border-orange-200 bg-orange-100 text-orange-800 text-sm font-semibold hover:bg-orange-200 transition"
+                          onClick={() => openModerationModal('ban', selectedBanned.userId!, selectedBanned.phone || undefined)}
+                          className="px-3 py-2 rounded-full border border-orange-200 bg-orange-50 text-orange-800 text-xs font-semibold"
                         >
                           🚫 Bannir
                         </button>
                         <button
-                          onClick={() =>
-                            openModerationModal(
-                              'delete',
-                              selectedThread.user_id,
-                              selectedThread.user_phone,
-                            )
-                          }
-                          className="px-4 py-3 rounded-2xl border border-red-200 bg-red-100 text-red-800 text-sm font-semibold hover:bg-red-200 transition"
+                          onClick={() => openModerationModal('delete', selectedBanned.userId!, selectedBanned.phone || undefined)}
+                          className="px-3 py-2 rounded-full border border-red-200 bg-red-50 text-red-800 text-xs font-semibold"
                         >
                           💀 Supprimer
                         </button>
                       </div>
-                    </div>
-                  )}
-
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-2 text-slate-500">
-                      <MessageSquare className="w-4 h-4" />
-                      <p className="text-sm font-semibold text-slate-700">Fil de conversation</p>
-                    </div>
-                    <div className="space-y-4 max-h-[420px] overflow-y-auto pr-1">
-                      {selectedThread.messages.map((message) => (
-                        <div
-                          key={message.id}
-                          className={`rounded-2xl border p-4 ${
-                            message.sender_type === 'admin' ? 'bg-blue-50 border-blue-100' : 'bg-white border-slate-100'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-2">
-                              <span className="text-sm font-semibold text-slate-900">
-                                {message.sender_type === 'admin' ? 'Booms' : 'Client'}
-                              </span>
-                              {message.is_internal && (
-                                <span className="text-[10px] uppercase tracking-wide bg-slate-800 text-white px-2 py-0.5 rounded-full">
-                                  Note interne
-                                </span>
-                              )}
-                            </div>
-                            <span className="text-xs text-slate-400">{formattedRelative(message.created_at)}</span>
-                          </div>
-                          <p className="text-sm text-slate-700 mt-2 whitespace-pre-line">{message.body}</p>
-                        </div>
-                      ))}
-                    </div>
+                    )}
+                    <button
+                      onClick={() => loadBannedMessages(bannedFilter)}
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-slate-200 text-sm text-slate-600 hover:border-slate-400"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                      Rafraîchir
+                    </button>
                   </div>
+                </div>
 
-                  <div className="space-y-3">
-                    <div className="flex items-center gap-2 text-slate-500">
-                      <Mail className="w-4 h-4" />
-                      <p className="text-sm font-semibold text-slate-700">Composer une réponse</p>
+                {moderationContext && (
+                  <div className="rounded-2xl border border-rose-100 bg-rose-50 p-4">
+                    <div className="flex items-center gap-2 text-rose-700 text-sm mb-2">
+                      <AlertTriangle className="w-4 h-4" />
+                      Contexte de modération
                     </div>
-                    <textarea
-                      value={messageBody}
-                      onChange={(event) => setMessageBody(event.target.value)}
-                      placeholder="Rédigez un message clair et professionnel..."
-                      className="w-full min-h-[140px] rounded-2xl border border-slate-200 focus:ring-2 focus:ring-blue-200 focus:border-blue-400 text-sm p-4"
-                    />
-                    <div className="flex flex-wrap items-center gap-3">
-                      <label className="flex items-center gap-2 text-xs font-medium text-slate-600">
-                        <input
-                          type="checkbox"
-                          checked={isInternalNote}
-                          onChange={(event) => setIsInternalNote(event.target.checked)}
-                          className="rounded border-slate-300 text-slate-900 focus:ring-slate-500"
-                        />
-                        Note interne (non visible côté client)
-                      </label>
-                      <div className="flex-1" />
-                      <button
-                        onClick={handleSendMessage}
-                        disabled={!messageBody.trim()}
-                        className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-slate-900 text-white text-sm font-semibold disabled:opacity-40"
-                      >
-                        <Send className="w-4 h-4" />
-                        Envoyer
-                      </button>
+                    <div className="text-sm text-rose-900 font-semibold">
+                      {moderationContext.action_type === 'banned'
+                        ? '🚫 Compte banni'
+                        : moderationContext.action_type === 'inactive'
+                          ? '⏸️ Compte désactivé'
+                          : '💀 Compte supprimé'}
                     </div>
-                    {!!templates.length && (
-                      <div className="flex flex-wrap gap-2">
-                        {templates.slice(0, 4).map((template) => (
-                          <button
-                            key={template.title}
-                            onClick={() => insertTemplate(template.template)}
-                            className="px-3 py-1 rounded-full border border-slate-200 text-xs text-slate-600 hover:border-slate-400"
-                          >
-                            {template.title}
-                          </button>
-                        ))}
-                      </div>
+                    {moderationContext.action_reason && (
+                      <p className="text-xs text-rose-700 mt-1">
+                        Raison: {moderationContext.action_reason}
+                      </p>
+                    )}
+                    {moderationContext.action_at && (
+                      <p className="text-xs text-rose-600 mt-1">
+                        {formatDistanceToNow(new Date(moderationContext.action_at), {
+                          addSuffix: true,
+                          locale: fr,
+                        })}
+                      </p>
+                    )}
+                    {moderationContext.ban_until && moderationContext.action_type === 'banned' && (
+                      <p className="text-xs text-orange-700 font-semibold mt-1">
+                        ⏰ Auto-suppression: {formatDistanceToNow(new Date(moderationContext.ban_until), {
+                          addSuffix: true,
+                          locale: fr,
+                        })}
+                      </p>
                     )}
                   </div>
-                </>
-              )}
-            </section>
-          </section>
-        ) : (
-          <section className="space-y-6">
-            <div className="rounded-3xl border border-rose-100 bg-white shadow-xl p-6">
-              <div className="flex flex-wrap items-center gap-3">
-                <p className="text-sm font-semibold text-rose-900 flex items-center gap-2">
-                  <ShieldAlert className="w-4 h-4" />
-                  Alertes provenant de comptes bannis
-                </p>
-                <div className="flex items-center gap-2">
-                  {(['pending', 'responded', 'all'] as BannedFilter[]).map((option) => (
-                    <button
-                      key={option}
-                      onClick={() => setBannedFilter(option)}
-                      className={`px-3 py-1 rounded-full text-xs font-semibold border ${
-                        bannedFilter === option
-                          ? 'bg-rose-600 text-white border-rose-600'
-                          : 'bg-white text-rose-700 border-rose-200'
+                )}
+
+                <div className="space-y-4 max-h-[420px] overflow-y-auto pr-1">
+                  {chatItems.map((item) => (
+                    <div
+                      key={item.id}
+                      className={`rounded-2xl border p-4 max-w-[80%] ${
+                        item.role === 'admin'
+                          ? 'ml-auto bg-rose-50 border-rose-100'
+                          : 'bg-white border-slate-100'
                       }`}
                     >
-                      {option === 'pending' ? 'En attente' : option === 'responded' ? 'Répondu' : 'Tous'}
-                    </button>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-slate-700">
+                          {item.role === 'admin' ? 'Booms' : 'Client'}
+                        </span>
+                        <span className="text-xs text-slate-400">{formattedRelative(item.at)}</span>
+                      </div>
+                      <p className="text-sm text-slate-700 mt-2 whitespace-pre-line">{item.text}</p>
+                      {item.role === 'user' && item.status !== 'responded' && item.messageRef && (
+                        <div className="flex items-center justify-between mt-3">
+                          <span className="text-[11px] text-rose-600 font-semibold">⏳ En attente</span>
+                          <button
+                            onClick={() => openResponseModal(item.messageRef as BannedMessage)}
+                            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-rose-600 text-white text-xs font-semibold hover:bg-rose-700 transition"
+                          >
+                            <Mail className="w-3 h-3" />
+                            Répondre
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   ))}
                 </div>
-                <button
-                  onClick={() => loadBannedMessages(bannedFilter)}
-                  className="ml-auto inline-flex items-center gap-2 text-sm text-rose-700"
-                >
-                  <RefreshCw className="w-4 h-4" /> Rafraîchir
-                </button>
-              </div>
-            </div>
-
-            {bannedLoading && (
-              <div className="rounded-2xl border border-rose-100 bg-white p-8 text-center text-rose-500">
-                Chargement des alertes...
-              </div>
+              </>
             )}
-
-            {!bannedLoading && !bannedMessages.length && (
-              <div className="rounded-2xl border border-rose-100 bg-white p-8 text-center text-rose-600">
-                Aucune alerte pour ce filtre.
-              </div>
-            )}
-
-            <div className="grid gap-4 md:grid-cols-2">
-              {bannedMessages.map((message) => (
-                <div
-                  key={message.id}
-                  className={`rounded-2xl border-2 shadow-sm p-5 flex flex-col gap-3 ${
-                    message.current_account_status === 'banned'
-                      ? 'border-orange-200 bg-orange-50'
-                      : message.current_account_status === 'deleted'
-                        ? 'border-red-200 bg-red-50'
-                        : message.current_account_status === 'inactive'
-                          ? 'border-amber-200 bg-amber-50'
-                          : 'border-rose-100 bg-white'
-                  }`}
-                >
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <p className="text-sm font-semibold text-slate-900">
-                        {message.user_phone || message.user_email || 'Contact inconnu'}
-                      </p>
-                      <p className="text-xs text-slate-500">
-                        Canal · {message.channel || 'inconnu'} · #{message.id}
-                      </p>
-                    </div>
-                    <div className="flex flex-col items-end gap-2">
-                      <span
-                        className={`text-xs font-semibold px-2 py-1 rounded-full ${
-                          (message.status || 'pending') === 'responded'
-                            ? 'bg-emerald-100 text-emerald-700'
-                            : 'bg-rose-100 text-rose-700'
-                        }`}
-                      >
-                        {(message.status || 'pending') === 'responded' ? '✅ Répondu' : '⏳ En attente'}
-                      </span>
-                      {message.current_account_status && (
-                        <span className="text-[11px] font-semibold">
-                          {accountStatusBadge(message.current_account_status as AccountStatus)}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Action context */}
-                  {message.action_type && (
-                    <div className="rounded-lg bg-white/60 p-3 border border-white/40 text-xs space-y-1">
-                      <p className="font-semibold text-slate-700">
-                        {message.action_type === 'banned'
-                          ? '🚫 Compte banni'
-                          : message.action_type === 'inactive'
-                            ? '⏸️ Compte désactivé'
-                            : '💀 Compte supprimé'}
-                      </p>
-                      {message.action_reason && (
-                        <p className="text-slate-600">
-                          <strong>Raison:</strong> {message.action_reason}
-                        </p>
-                      )}
-                      {message.action_at && (
-                        <p className="text-slate-500">
-                          {formatDistanceToNow(new Date(message.action_at), {
-                            addSuffix: true,
-                            locale: fr,
-                          })}
-                        </p>
-                      )}
-                      {message.ban_until && message.action_type === 'banned' && (
-                        <p className="text-orange-700 font-semibold">
-                          ⏰ Auto-suppression: {formatDistanceToNow(new Date(message.ban_until), {
-                            addSuffix: true,
-                            locale: fr,
-                          })}
-                        </p>
-                      )}
-                    </div>
-                  )}
-
-                  <p className="text-sm text-slate-700 whitespace-pre-line flex-1 bg-slate-50 p-3 rounded-lg">
-                    {message.message}
-                  </p>
-
-                  <div className="text-xs text-slate-400 flex items-center gap-2">
-                    <Clock className="w-3 h-3" />
-                    {formatDistanceToNow(new Date(message.created_at), {
-                      addSuffix: true,
-                      locale: fr,
-                    })}
-                  </div>
-
-                  <div className="flex items-center justify-between pt-2 border-t border-slate-100">
-                    <div className="text-[11px] text-slate-500">Message #{message.id}</div>
-                    {(message.status || 'pending') !== 'responded' ? (
-                      <button
-                        onClick={() => openResponseModal(message)}
-                        className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-rose-600 text-white text-xs font-semibold hover:bg-rose-700 transition"
-                      >
-                        <Mail className="w-3 h-3" />
-                        Répondre
-                      </button>
-                    ) : (
-                      <p className="text-xs text-emerald-600 font-medium">✅ Réponse envoyée</p>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
           </section>
-        )}
+        </section>
       </div>
 
       {respondingMessage && (
@@ -1027,7 +672,6 @@ export default function SupportCommandCenter() {
         </div>
       )}
 
-      {/* Moderation Modal */}
       {moderationUser && moderationAction && (
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
           <div
@@ -1052,6 +696,9 @@ export default function SupportCommandCenter() {
                 <p className="text-sm text-slate-600 mt-1">
                   {moderationUser.phone || `ID: ${moderationUser.id}`}
                 </p>
+                {accountStatus && (
+                  <div className="mt-2">{accountStatusBadge(accountStatus)}</div>
+                )}
               </div>
               <button
                 onClick={() => {
@@ -1065,7 +712,6 @@ export default function SupportCommandCenter() {
               </button>
             </div>
 
-            {/* Warning for delete */}
             {moderationAction === 'delete' && (
               <div className="rounded-2xl border-2 border-red-300 bg-red-50 p-4">
                 <p className="text-sm font-semibold text-red-900 flex items-start gap-2">
@@ -1075,13 +721,12 @@ export default function SupportCommandCenter() {
                 <ul className="text-xs text-red-800 mt-2 space-y-1 ml-7">
                   <li>✓ Suppression complète de l'utilisateur</li>
                   <li>✓ Suppression de tous ses assets</li>
-                  <li>✓ Suppression de tous ses transactions</li>
+                  <li>✓ Suppression de toutes ses transactions</li>
                   <li>✓ Suppression de toutes ses données</li>
                 </ul>
               </div>
             )}
 
-            {/* Warning for ban */}
             {moderationAction === 'ban' && (
               <div className="rounded-2xl border-2 border-orange-300 bg-orange-50 p-4">
                 <p className="text-sm font-semibold text-orange-900">
@@ -1093,7 +738,6 @@ export default function SupportCommandCenter() {
               </div>
             )}
 
-            {/* Warning for deactivate */}
             {moderationAction === 'deactivate' && (
               <div className="rounded-2xl border-2 border-amber-300 bg-amber-50 p-4">
                 <p className="text-sm font-semibold text-amber-900">

@@ -1,16 +1,19 @@
+from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.support_models import SupportPriority, SupportThreadStatus
-from app.models.user_models import User
+from app.models.user_models import User, UserStatus
 from app.schemas.support_schemas import (
     AdminResponseCreate,
     BannedMessageCreate,
     BannedMessageResponse,
+    SupportAccountStatusResponse,
     SupportMessageCreate,
     SupportMessageResponse,
     SupportThreadCreate,
@@ -20,11 +23,18 @@ from app.schemas.support_schemas import (
     SuggestedMessage,
     get_suggested_messages,
 )
+from app.schemas.user_schemas import UserStatusUpdateRequest
 from app.services.auth import get_current_user_from_token as get_current_user
 from app.services.support_service import SupportService
+from app.services.user_service import UserService
 
 router = APIRouter(prefix="/support", tags=["support"])
 ThreadScope = Literal["mine", "assigned", "all"]
+
+
+class SupportModerationRequest(BaseModel):
+    reason: str = Field(default="", max_length=255)
+    duration_hours: Optional[int] = Field(default=None, ge=1, le=720)
 
 
 def get_optional_user(request: Request, db: Session = Depends(get_db)) -> Optional[User]:
@@ -162,6 +172,20 @@ def list_banned_messages(
     return service.list_banned_messages(status_filter)
 
 
+@router.get("/banned-messages/public", response_model=list[BannedMessageResponse])
+def list_banned_messages_public(
+    phone: Optional[str] = Query(None, alias="phone"),
+    email: Optional[str] = Query(None, alias="email"),
+    db: Session = Depends(get_db),
+):
+    """Canal public pour récupérer les réponses liées à un téléphone/email."""
+    if not phone and not email:
+        raise HTTPException(status_code=400, detail="Téléphone ou email requis")
+
+    service = SupportService(db)
+    return service.list_banned_messages_public(phone, email)
+
+
 @router.post("/banned-messages/{message_id}/response", response_model=BannedMessageResponse)
 def respond_to_banned_message(
     message_id: int,
@@ -177,3 +201,159 @@ def respond_to_banned_message(
         return service.respond_to_banned_message(message_id, payload, current_user)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/users/{user_id}/status", response_model=SupportAccountStatusResponse)
+def get_support_user_status(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Accès administrateur requis")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        return SupportAccountStatusResponse(
+            status="deleted",
+            is_active=False,
+        )
+
+    if user.status == UserStatus.BANNED:
+        status_value = "banned"
+    elif user.is_active is False:
+        status_value = "inactive"
+    else:
+        status_value = "active"
+
+    ban_until = None
+    if status_value == "banned" and user.banned_at:
+        ban_until = user.banned_at + timedelta(hours=72)
+
+    return SupportAccountStatusResponse(
+        status=status_value,
+        is_active=bool(user.is_active),
+        banned_at=user.banned_at,
+        banned_reason=user.status_reason if status_value == "banned" else None,
+        ban_until=ban_until,
+        deactivated_at=user.last_status_changed_at if status_value == "inactive" else None,
+        deactivated_reason=user.status_reason if status_value == "inactive" else None,
+        last_status_changed_at=user.last_status_changed_at,
+    )
+
+
+@router.patch("/users/{user_id}/deactivate", response_model=dict)
+def deactivate_user_from_support(
+    user_id: int,
+    payload: Optional[SupportModerationRequest] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Accès administrateur requis")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+
+    reason = payload.reason if payload else ""
+    status_payload = UserStatusUpdateRequest(
+        status=UserStatus.SUSPENDED,
+        reason=reason or "Désactivation manuelle",
+        message=reason or "Compte désactivé par le support",
+        source="support",
+    )
+    UserService.update_user_status(db, user, status_payload, actor=current_user)
+    user.banned_at = None
+    user.banned_by = None
+    db.add(user)
+    db.commit()
+
+    return {"success": True, "message": "Compte désactivé"}
+
+
+@router.patch("/users/{user_id}/ban", response_model=dict)
+def ban_user_from_support(
+    user_id: int,
+    payload: Optional[SupportModerationRequest] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Accès administrateur requis")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+
+    reason = payload.reason if payload else ""
+    duration_hours = payload.duration_hours if payload and payload.duration_hours else 72
+    ban_until = datetime.now(timezone.utc) + timedelta(hours=duration_hours)
+
+    status_payload = UserStatusUpdateRequest(
+        status=UserStatus.BANNED,
+        reason=reason or "Bannissement manuel",
+        message=reason or "Compte banni par le support",
+        metadata={"ban_until": ban_until.isoformat(), "ban_duration_hours": duration_hours},
+        source="support",
+    )
+    UserService.update_user_status(db, user, status_payload, actor=current_user)
+    user.banned_at = datetime.now(timezone.utc)
+    user.banned_by = current_user.id
+    user.is_active = False
+    db.add(user)
+    db.commit()
+
+    return {"success": True, "message": "Compte banni"}
+
+
+@router.patch("/users/{user_id}/reactivate", response_model=dict)
+def reactivate_user_from_support(
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Accès administrateur requis")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+
+    status_payload = UserStatusUpdateRequest(
+        status=UserStatus.ACTIVE,
+        reason=None,
+        message=None,
+        source="support",
+    )
+    UserService.update_user_status(db, user, status_payload, actor=current_user)
+    user.banned_at = None
+    user.banned_by = None
+    user.is_active = True
+    db.add(user)
+    db.commit()
+
+    return {"success": True, "message": "Compte réactivé"}
+
+
+@router.delete("/users/{user_id}", response_model=dict)
+def delete_user_from_support(
+    user_id: int,
+    payload: Optional[SupportModerationRequest] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Accès administrateur requis")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
+
+    if user.id == current_user.id:
+        raise HTTPException(status_code=400, detail="Vous ne pouvez pas vous supprimer vous-même")
+
+    db.delete(user)
+    db.commit()
+
+    return {"success": True, "message": "Utilisateur supprimé"}

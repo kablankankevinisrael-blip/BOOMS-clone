@@ -1,11 +1,12 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { View, Text, StyleSheet, TextInput, TouchableOpacity } from 'react-native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { View, Text, StyleSheet, TextInput, TouchableOpacity, ScrollView } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useAuth } from '../contexts/AuthContext';
-import supportService, { AccountStatusSnapshot } from '../services/support';
+import supportService, { AccountStatusSnapshot, BannedMessage } from '../services/support';
 import { palette, gradients, fonts } from '../styles/theme';
 import { navigationRef } from '../navigation/AppNavigator';
+import SupportCenterScreen from '../screens/SupportCenterScreen';
 
 interface AccountStateGateProps {
   children: React.ReactNode;
@@ -13,16 +14,20 @@ interface AccountStateGateProps {
 
 const STATUS_LABELS: Record<string, { title: string; subtitle: string }> = {
   inactive: {
-    title: 'Compte désactivé',
-    subtitle: 'Votre compte est désactivé. Vous pouvez contacter le support pour obtenir plus d\'informations.'
+    title: 'Compte désactivé (temporaire)',
+    subtitle: 'Désactivation temporaire. L’admin peut réactiver à tout moment.'
   },
   suspended: {
     title: 'Compte temporairement désactivé',
     subtitle: 'Vous ne pouvez plus effectuer d\'opérations pendant la période indiquée.'
   },
   banned: {
-    title: 'Compte désactivé définitivement',
-    subtitle: 'Contacter l\'équipe support pour connaître les démarches possibles.'
+    title: 'Compte banni (72h)',
+    subtitle: 'Bannissement temporaire. Sans réactivation sous 72h, le compte est auto‑supprimé.'
+  },
+  deleted: {
+    title: 'Compte supprimé',
+    subtitle: 'Compte supprimé définitivement de la base de données.'
   },
   limited: {
     title: 'Compte limité',
@@ -96,6 +101,12 @@ export default function AccountStateGate({ children }: AccountStateGateProps) {
   const [appealFeedback, setAppealFeedback] = useState<string | null>(null);
   const [contactPhone, setContactPhone] = useState('');
   const [contactEmail, setContactEmail] = useState('');
+  const [bannedMessages, setBannedMessages] = useState<BannedMessage[]>([]);
+  const [loadingResponses, setLoadingResponses] = useState(false);
+  const chatScrollRef = useRef<ScrollView | null>(null);
+  const lastResponseSignatureRef = useRef<string>('');
+  const [showSupportCenter, setShowSupportCenter] = useState(false);
+  const [expandedMessageId, setExpandedMessageId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!accountStatus) {
@@ -132,13 +143,58 @@ export default function AccountStateGate({ children }: AccountStateGateProps) {
   }, []);
 
   const status = localStatus?.status?.toLowerCase();
-  const isBlocking = Boolean(localStatus?.is_blocking) || status === 'inactive' || status === 'banned' || status === 'suspended';
+  const isBlocking =
+    Boolean(localStatus?.is_blocking) ||
+    status === 'inactive' ||
+    status === 'banned' ||
+    status === 'suspended' ||
+    status === 'deleted';
   const countdown = useCountdown(localStatus?.suspended_until);
 
   const effectiveLabel = useMemo(() => {
     if (!status) return null;
     return STATUS_LABELS[status] || null;
   }, [status]);
+
+  const sortedMessages = useMemo(() => {
+    return [...bannedMessages].sort((a, b) => {
+      const aTime = a.created_at ? Date.parse(a.created_at) : 0;
+      const bTime = b.created_at ? Date.parse(b.created_at) : 0;
+      return aTime - bTime;
+    });
+  }, [bannedMessages]);
+
+  const loadResponses = async () => {
+    const phone = contactPhone.trim();
+    const email = contactEmail.trim();
+    if (!phone && !email) return;
+    try {
+      setLoadingResponses(true);
+      const data = await supportService.getPublicBannedMessages({ phone, email });
+      const signature = data
+        .map((msg) => `${msg.id}:${msg.admin_response || ''}`)
+        .join('|');
+      if (signature !== lastResponseSignatureRef.current) {
+        lastResponseSignatureRef.current = signature;
+        setBannedMessages(data);
+      }
+    } catch {
+      // silencieux
+    } finally {
+      setLoadingResponses(false);
+    }
+  };
+
+  useEffect(() => {
+    let interval: NodeJS.Timeout | null = null;
+    if (isBlocking) {
+      loadResponses();
+      interval = setInterval(loadResponses, 30000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [isBlocking, contactPhone, contactEmail]);
 
   const handleAppeal = async () => {
     if (!appealMessage.trim()) {
@@ -200,6 +256,7 @@ export default function AccountStateGate({ children }: AccountStateGateProps) {
       });
       setAppealFeedback('Votre message a bien été transmis à l\'équipe support.');
       setAppealMessage('');
+      await loadResponses();
       console.log('✅ [SUPPORT-PANEL] Message envoyé');
     } catch (error: any) {
       console.error('❌ [SUPPORT-PANEL] Erreur envoi', error?.response?.data || error?.message);
@@ -219,14 +276,23 @@ export default function AccountStateGate({ children }: AccountStateGateProps) {
   };
 
   const openSupportCenter = () => {
-    if (navigationRef.isReady()) {
-      navigationRef.navigate('SupportCenter');
-    }
+    setShowSupportCenter(true);
   };
 
   const handleSwitchAccount = async () => {
     await logout();
   };
+
+  if (showSupportCenter) {
+    return (
+      <View style={styles.supportWrapper}>
+        <SupportCenterScreen />
+        <TouchableOpacity style={styles.supportBackButton} onPress={() => setShowSupportCenter(false)}>
+          <Text style={styles.supportBackText}>Retour</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
   if (!status || status === 'active') {
     return <>{children}</>;
@@ -236,55 +302,122 @@ export default function AccountStateGate({ children }: AccountStateGateProps) {
     return (
         <LinearGradient colors={[...gradients.hero] as [string, string, ...string[]]} style={styles.blockWrapper}>
         <View style={styles.blockCard}>
-          <Text style={styles.blockEmoji}>{status === 'banned' || status === 'inactive' ? '⛔' : '⚠️'}</Text>
-          <Text style={styles.blockTitle}>{effectiveLabel?.title || localStatus?.status_label || 'Compte désactivé'}</Text>
-          <Text style={styles.blockSubtitle}>{localStatus?.status_message || effectiveLabel?.subtitle}</Text>
-          <View style={styles.blockSection}>
-            <Text style={styles.sectionLabel}>Motif communiqué</Text>
-            <Text style={styles.sectionValue}>{localStatus?.status_reason || 'Non communiqué'}</Text>
-            {localStatus?.last_status_changed_at && (
-              <Text style={styles.sectionMeta}>Décision mise à jour le {formatDate(localStatus.last_status_changed_at)}</Text>
-            )}
-          </View>
-          <View style={styles.blockSection}>
-            <Text style={styles.sectionLabel}>Contacter le support</Text>
-            <TextInput
-              style={styles.input}
-              value={contactPhone}
-              onChangeText={setContactPhone}
-              placeholder="Téléphone"
-              placeholderTextColor="rgba(255,255,255,0.6)"
-              keyboardType="phone-pad"
-              editable={!contactPhone}
-            />
-            <TextInput
-              style={[styles.input, { marginTop: 10 }]}
-              value={contactEmail}
-              onChangeText={setContactEmail}
-              placeholder="Email"
-              placeholderTextColor="rgba(255,255,255,0.6)"
-              keyboardType="email-address"
-              autoCapitalize="none"
-            />
-            <TextInput
-              style={styles.textArea}
-              value={appealMessage}
-              onChangeText={setAppealMessage}
-              placeholder="Expliquez votre situation ou demandez des précisions"
-              placeholderTextColor="rgba(255,255,255,0.6)"
-              multiline
-            />
-            {appealFeedback && <Text style={styles.feedbackText}>{appealFeedback}</Text>}
-            <TouchableOpacity style={styles.primaryButton} onPress={handleAppeal} disabled={sendingAppeal}>
-              <Text style={styles.primaryButtonText}>{sendingAppeal ? 'Envoi en cours...' : 'Envoyer un message au support'}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.secondaryButton} onPress={openSupportCenter}>
-              <Text style={styles.secondaryButtonText}>Ouvrir le support</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.ghostButton} onPress={handleSwitchAccount}>
-              <Text style={styles.ghostButtonText}>Changer de compte</Text>
-            </TouchableOpacity>
-          </View>
+          <ScrollView contentContainerStyle={styles.blockScrollContent} showsVerticalScrollIndicator={false}>
+            <Text style={styles.blockEmoji}>{status === 'banned' || status === 'inactive' ? '⛔' : '⚠️'}</Text>
+            <Text style={styles.blockTitle}>{effectiveLabel?.title || localStatus?.status_label || 'Compte désactivé'}</Text>
+            <Text style={styles.blockSubtitle}>{localStatus?.status_message || effectiveLabel?.subtitle}</Text>
+            <View style={styles.blockSection}>
+              <Text style={styles.sectionLabel}>Motif communiqué</Text>
+              <Text style={styles.sectionValue}>{localStatus?.status_reason || 'Non communiqué'}</Text>
+              {localStatus?.last_status_changed_at && (
+                <Text style={styles.sectionMeta}>Décision mise à jour le {formatDate(localStatus.last_status_changed_at)}</Text>
+              )}
+            </View>
+            <View style={styles.blockSection}>
+              <Text style={styles.sectionLabel}>Support (chat)</Text>
+              <View style={styles.chatHeader}>
+                <TextInput
+                  style={styles.input}
+                  value={contactPhone}
+                  onChangeText={setContactPhone}
+                  placeholder="Téléphone"
+                  placeholderTextColor="rgba(255,255,255,0.6)"
+                  keyboardType="phone-pad"
+                  editable={!contactPhone}
+                />
+                <TextInput
+                  style={[styles.input, { marginTop: 10 }]}
+                  value={contactEmail}
+                  onChangeText={setContactEmail}
+                  placeholder="Email"
+                  placeholderTextColor="rgba(255,255,255,0.6)"
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                />
+              </View>
+
+              <ScrollView
+                ref={chatScrollRef}
+                style={styles.chatContainer}
+                contentContainerStyle={styles.chatContent}
+                nestedScrollEnabled
+                onContentSizeChange={() => chatScrollRef.current?.scrollToEnd({ animated: true })}
+              >
+                {sortedMessages.length === 0 && (
+                  <Text style={styles.chatEmpty}>Aucun message pour le moment.</Text>
+                )}
+                {sortedMessages.map((msg) => (
+                  <View key={msg.id}>
+                    <TouchableOpacity
+                      onPress={() =>
+                        setExpandedMessageId((current) =>
+                          current === `u-${msg.id}` ? null : `u-${msg.id}`
+                        )
+                      }
+                      style={[styles.chatBubble, styles.chatBubbleUser]}
+                      activeOpacity={0.8}
+                    >
+                      <Text style={styles.chatText}>{msg.message}</Text>
+                      <Text style={styles.chatMeta}>Vous</Text>
+                      {expandedMessageId === `u-${msg.id}` && msg.created_at && (
+                        <Text style={styles.chatMeta}>
+                          {new Date(msg.created_at).toLocaleString('fr-FR')}
+                        </Text>
+                      )}
+                    </TouchableOpacity>
+                    {msg.admin_response && (
+                      <TouchableOpacity
+                        onPress={() =>
+                          setExpandedMessageId((current) =>
+                            current === `a-${msg.id}` ? null : `a-${msg.id}`
+                          )
+                        }
+                        style={[styles.chatBubble, styles.chatBubbleAdmin]}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={styles.chatText}>{msg.admin_response}</Text>
+                        <Text style={styles.chatMeta}>Support</Text>
+                        {expandedMessageId === `a-${msg.id}` && msg.created_at && (
+                          <Text style={styles.chatMeta}>
+                            {new Date(msg.created_at).toLocaleString('fr-FR')}
+                          </Text>
+                        )}
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                ))}
+              </ScrollView>
+              <View style={styles.chatComposer}>
+                <TextInput
+                  style={styles.textArea}
+                  value={appealMessage}
+                  onChangeText={setAppealMessage}
+                  placeholder="Écrivez votre message..."
+                  placeholderTextColor="rgba(255,255,255,0.6)"
+                  multiline
+                />
+                {appealFeedback && <Text style={styles.feedbackText}>{appealFeedback}</Text>}
+                <View style={styles.chatActions}>
+                  <TouchableOpacity style={styles.primaryButton} onPress={handleAppeal} disabled={sendingAppeal}>
+                    <Text style={styles.primaryButtonText}>{sendingAppeal ? 'Envoi...' : 'Envoyer'}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.secondaryButton} onPress={loadResponses} disabled={loadingResponses}>
+                    <Text style={styles.secondaryButtonText}>
+                      {loadingResponses ? 'Actualisation...' : 'Actualiser'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+              <View style={styles.chatActionsRow}>
+                <TouchableOpacity style={[styles.secondaryButton, styles.actionButton]} onPress={openSupportCenter}>
+                  <Text style={styles.secondaryButtonText}>Ouvrir le support</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.ghostButton, styles.actionButton]} onPress={handleSwitchAccount}>
+                  <Text style={styles.ghostButtonText}>Changer de compte</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </ScrollView>
         </View>
       </LinearGradient>
     );
@@ -335,12 +468,16 @@ const styles = StyleSheet.create({
   },
   blockCard: {
     width: '100%',
-    maxWidth: 420,
-    backgroundColor: 'rgba(8,12,24,0.85)',
+    maxWidth: 560,
+    backgroundColor: 'transparent',
     borderRadius: 28,
-    padding: 24,
+    padding: 16,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)'
+    borderColor: 'rgba(255,255,255,0.12)',
+    maxHeight: '92%'
+  },
+  blockScrollContent: {
+    paddingBottom: 16,
   },
   blockEmoji: {
     fontSize: 42,
@@ -387,7 +524,7 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   textArea: {
-    minHeight: 100,
+    minHeight: 80,
     borderRadius: 16,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.1)',
@@ -405,10 +542,132 @@ const styles = StyleSheet.create({
     fontFamily: fonts.body,
     marginTop: 8,
   },
+  chatHeader: {
+    marginBottom: 10,
+  },
+  chatContainer: {
+    backgroundColor: 'rgba(255,255,255,0.02)',
+    borderRadius: 16,
+    padding: 14,
+    marginTop: 10,
+    height: 300,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    overflow: 'hidden',
+  },
+  chatContent: {
+    paddingBottom: 8,
+  },
+  chatEmpty: {
+    fontFamily: fonts.body,
+    color: 'rgba(255,255,255,0.6)',
+    textAlign: 'center',
+    paddingVertical: 12,
+  },
+  chatBubble: {
+    maxWidth: '85%',
+    borderRadius: 16,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginBottom: 8,
+  },
+  chatBubbleUser: {
+    alignSelf: 'flex-end',
+    backgroundColor: 'rgba(0, 199, 167, 0.25)',
+    borderWidth: 1,
+    borderColor: 'rgba(0, 199, 167, 0.35)',
+  },
+  chatBubbleAdmin: {
+    alignSelf: 'flex-start',
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  chatText: {
+    fontFamily: fonts.body,
+    color: palette.white,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  chatMeta: {
+    marginTop: 6,
+    fontFamily: fonts.body,
+    color: 'rgba(255,255,255,0.5)',
+    fontSize: 11,
+  },
+  chatActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 10,
+    justifyContent: 'space-between',
+  },
+  chatActionsRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 12,
+    alignItems: 'stretch',
+    flexWrap: 'wrap',
+  },
+  supportWrapper: {
+    flex: 1,
+  },
+  supportBackButton: {
+    position: 'absolute',
+    top: 48,
+    left: 16,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 16,
+  },
+  supportBackText: {
+    color: palette.white,
+    fontFamily: fonts.bodyMedium,
+    fontSize: 14,
+  },
+  actionButton: {
+    flexGrow: 1,
+    flexBasis: '48%',
+    minWidth: 140,
+  },
+  chatComposer: {
+    marginTop: 12,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderRadius: 16,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+  },
   feedbackText: {
     fontFamily: fonts.body,
     color: palette.amber,
     marginTop: 8,
+  },
+  responseCard: {
+    marginTop: 12,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderRadius: 16,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  responseText: {
+    fontFamily: fonts.body,
+    color: palette.white,
+    marginTop: 6,
+  },
+  responseCard: {
+    marginTop: 12,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderRadius: 16,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+  },
+  responseText: {
+    fontFamily: fonts.body,
+    color: palette.white,
+    marginTop: 6,
   },
   primaryButton: {
     backgroundColor: palette.teal,

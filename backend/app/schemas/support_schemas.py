@@ -160,11 +160,30 @@ class BannedMessageResponse(BaseModel):
     responded_at: Optional[datetime]
     responded_by: Optional[int]
     metadata: dict[str, Any] = Field(default_factory=dict, alias="meta_payload")
+    action_type: Optional[str] = None
+    action_reason: Optional[str] = None
+    action_at: Optional[datetime] = None
+    action_by: Optional[int] = None
+    ban_until: Optional[datetime] = None
+    current_account_status: Optional[str] = None
     
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 class AdminResponseCreate(BaseModel):
     response: str
+
+
+class SupportAccountStatusResponse(BaseModel):
+    status: str
+    is_active: bool
+    banned_at: Optional[datetime] = None
+    banned_reason: Optional[str] = None
+    ban_until: Optional[datetime] = None
+    deactivated_at: Optional[datetime] = None
+    deactivated_reason: Optional[str] = None
+    last_status_changed_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ========== USER STATUS MANAGEMENT ==========

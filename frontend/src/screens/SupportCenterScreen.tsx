@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -14,6 +14,7 @@ import { useAuth } from '../contexts/AuthContext';
 import supportService, {
   SupportThread,
   SuggestedTemplate,
+  BannedMessage,
 } from '../services/support';
 import { gradients, palette, fonts } from '../styles/theme';
 
@@ -30,7 +31,6 @@ export default function SupportCenterScreen() {
   const [threads, setThreads] = useState<SupportThread[]>([]);
   const [selectedThread, setSelectedThread] = useState<SupportThread | null>(null);
   const [loadingThreads, setLoadingThreads] = useState(true);
-  const [creatingThread, setCreatingThread] = useState(false);
   const [sendingMessage, setSendingMessage] = useState(false);
   const [composer, setComposer] = useState('');
   const [suggestions, setSuggestions] = useState<SuggestedTemplate[]>([]);
@@ -38,11 +38,15 @@ export default function SupportCenterScreen() {
   const [supportFeedback, setSupportFeedback] = useState<string | null>(null);
   const [contactPhone, setContactPhone] = useState('');
   const [contactEmail, setContactEmail] = useState('');
+  const [publicResponses, setPublicResponses] = useState<BannedMessage[]>([]);
+  const [refreshingPublic, setRefreshingPublic] = useState(false);
+  const threadChatRef = useRef<ScrollView | null>(null);
+  const [expandedMessageId, setExpandedMessageId] = useState<string | null>(null);
 
   const normalize = (value?: string | null) => (value || '').toLowerCase();
   const isAccountBlocked =
     Boolean(accountStatus?.is_blocking) ||
-    ['banned', 'suspended', 'inactive'].includes(normalize(accountStatus?.status));
+    ['banned', 'suspended', 'inactive', 'deleted'].includes(normalize(accountStatus?.status));
   const canUseThreads = Boolean(token) && isAuthenticated && !isAccountBlocked;
 
   const badgeConfig = useMemo(() => {
@@ -57,7 +61,7 @@ export default function SupportCenterScreen() {
 
     if (accountStatus) {
       const status = normalize(accountStatus.status);
-      const isCritical = status === 'banned' || status === 'suspended';
+      const isCritical = status === 'banned' || status === 'suspended' || status === 'deleted';
       const isPending = status.includes('pending') || status.includes('review') || status.includes('waiting');
       return {
         heading: 'Statut compte',
@@ -92,7 +96,34 @@ export default function SupportCenterScreen() {
     };
   }, [accountStatus, isAuthenticated, user?.kyc_status]);
 
-  const openTickets = useMemo(() => threads.filter(t => t.status === 'open' || t.status === 'pending').length, [threads]);
+  const chatItems = useMemo(() => {
+    if (!canUseThreads) {
+      return publicResponses
+        .slice()
+        .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
+        .flatMap((msg) => {
+          const items = [{ id: `u-${msg.id}`, role: 'user', text: msg.message, at: msg.created_at }];
+          if (msg.admin_response) {
+            items.push({ id: `a-${msg.id}`, role: 'admin', text: msg.admin_response, at: msg.created_at });
+          }
+          return items;
+        });
+    }
+
+    if (!selectedThread?.messages?.length) {
+      return [] as Array<{ id: string; role: 'user' | 'admin'; text: string; at: string }>;
+    }
+
+    return selectedThread.messages
+      .slice()
+      .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
+      .map((message) => ({
+        id: `t-${message.id}`,
+        role: message.sender_type === 'admin' ? 'admin' : 'user',
+        text: message.body,
+        at: message.created_at,
+      }));
+  }, [canUseThreads, publicResponses, selectedThread?.messages]);
 
   const loadThreads = useCallback(async (threadId?: number) => {
     try {
@@ -116,6 +147,40 @@ export default function SupportCenterScreen() {
   useEffect(() => {
     supportService.getSuggestedMessages().then(setSuggestions).catch(() => setSuggestions([]));
   }, []);
+
+  const refreshPublicResponses = useCallback(async () => {
+    const phone = contactPhone.trim();
+    const email = contactEmail.trim();
+    if (!phone && !email) return;
+    try {
+      setRefreshingPublic(true);
+      const data = await supportService.getPublicBannedMessages({ phone, email });
+      setPublicResponses(data);
+    } catch {
+      // silencieux
+    } finally {
+      setRefreshingPublic(false);
+    }
+  }, [contactPhone, contactEmail]);
+
+  useEffect(() => {
+    if (!canUseThreads) {
+      refreshPublicResponses();
+    }
+  }, [canUseThreads, refreshPublicResponses]);
+
+  useEffect(() => {
+    if (canUseThreads) return;
+    const phone = contactPhone.trim();
+    const email = contactEmail.trim();
+    if (!phone && !email) return;
+
+    const interval = setInterval(() => {
+      refreshPublicResponses();
+    }, 30000);
+
+    return () => clearInterval(interval);
+  }, [canUseThreads, contactPhone, contactEmail, refreshPublicResponses]);
 
   useEffect(() => {
     const loadContact = async () => {
@@ -155,12 +220,10 @@ export default function SupportCenterScreen() {
     }
   };
 
-  const handleCreateThread = async () => {
-    if (!draft.subject.trim() || !draft.message.trim()) {
-      return;
-    }
+  const handleSendChat = async () => {
+    if (!composer.trim()) return;
     try {
-      setCreatingThread(true);
+      setSendingMessage(true);
       setSupportFeedback(null);
 
       if (!canUseThreads) {
@@ -199,38 +262,39 @@ export default function SupportCenterScreen() {
           // silencieux
         }
 
-        console.log('📨 [SUPPORT] Envoi public (banned-messages)', {
-          hasPhone: !!userPhone,
-          hasEmail: !!userEmail,
-          category: draft.category,
-        });
         await supportService.submitBannedAppeal({
-          message: `${draft.subject.trim()}\n\n${draft.message.trim()}`,
+          message: composer.trim(),
           channel: 'mobile_app',
           user_phone: userPhone,
           user_email: userEmail,
         });
-        setDraft({ subject: '', category: draft.category, message: '' });
+        setComposer('');
         setSupportFeedback('Votre message a bien été transmis à l\'équipe support.');
         return;
       }
 
-      console.log('📨 [SUPPORT] Envoi ticket authentifié');
+      if (selectedThread) {
+        await supportService.postMessage(selectedThread.id, { message: composer.trim() });
+        setComposer('');
+        await selectThread(selectedThread.id);
+        return;
+      }
+
       const created = await supportService.createThread({
-        subject: draft.subject.trim(),
-        category: draft.category,
-        message: draft.message.trim(),
+        subject: 'Support mobile',
+        category: 'general',
+        message: composer.trim(),
       });
-      setDraft({ subject: '', category: draft.category, message: '' });
+      setComposer('');
       await loadThreads(created.id);
     } catch (error) {
-      console.error('❌ [SUPPORT] Erreur création ticket', (error as any)?.response?.data || error);
+      console.error('❌ [SUPPORT] Erreur envoi message', (error as any)?.response?.data || error);
       const detail = (error as any)?.response?.data?.detail;
       setSupportFeedback(
         typeof detail === 'string' ? detail : 'Impossible d\'envoyer le message.'
       );
     } finally {
-      setCreatingThread(false);
+      setSendingMessage(false);
     }
   };
 
@@ -306,34 +370,23 @@ export default function SupportCenterScreen() {
           </View>
         </View>
 
-        <View style={styles.metricsRow}>
-          <View style={styles.metricCard}>
-            <Text style={styles.metricLabel}>Tickets ouverts</Text>
-            <Text style={styles.metricValue}>{openTickets}</Text>
-            <Text style={styles.metricHint}>En attente de réponse</Text>
-          </View>
-          <View style={styles.metricCard}>
-            <Text style={styles.metricLabel}>Délai moyen</Text>
-            <Text style={styles.metricValue}>24-48h</Text>
-            <Text style={styles.metricHint}>Support 24/24 hors week-end</Text>
-          </View>
-          <View style={styles.metricCard}>
-            <Text style={styles.metricLabel}>Priorité</Text>
-            <Text style={styles.metricValue}>
-              {isAuthenticated && accountStatus
-                ? accountStatus.status === 'banned'
-                  ? 'Critique'
-                  : 'Standard'
-                : 'Invité'}
-            </Text>
-            <Text style={styles.metricHint}>
-              {isAuthenticated ? 'Suivi personnalisé' : 'Connectez-vous pour un suivi prioritaire'}
-            </Text>
-          </View>
-        </View>
-
         <View style={styles.sectionCard}>
-          <Text style={styles.sectionTitle}>Nouveau ticket</Text>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Support (chat)</Text>
+            {!canUseThreads && (
+              <TouchableOpacity
+                onPress={refreshPublicResponses}
+                style={styles.refreshButton}
+                disabled={refreshingPublic}
+              >
+                {refreshingPublic ? (
+                  <ActivityIndicator size="small" color={palette.white} />
+                ) : (
+                  <Text style={styles.refreshButtonText}>Actualiser</Text>
+                )}
+              </TouchableOpacity>
+            )}
+          </View>
           {!canUseThreads && (
             <View style={styles.fieldGroup}>
               <Text style={styles.fieldLabel}>Contact (téléphone ou email)</Text>
@@ -356,137 +409,70 @@ export default function SupportCenterScreen() {
               />
             </View>
           )}
-          <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>Objet</Text>
-            <TextInput
-              style={styles.input}
-              value={draft.subject}
-              onChangeText={value => setDraft(prev => ({ ...prev, subject: value }))}
-              placeholder="Ajouter un objet"
-              placeholderTextColor="rgba(255,255,255,0.4)"
-            />
-          </View>
-          <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>Catégorie</Text>
-            <View style={styles.categoryRow}>
-              {CATEGORY_OPTIONS.map(option => (
-                <TouchableOpacity
-                  key={option.value}
-                  style={[
-                    styles.categoryPill,
-                    draft.category === option.value && styles.categoryPillActive,
-                  ]}
-                  onPress={() => setDraft(prev => ({ ...prev, category: option.value }))}
-                >
-                  <Text
-                    style={[
-                      styles.categoryPillText,
-                      draft.category === option.value && styles.categoryPillTextActive,
-                    ]}
-                  >
-                    {option.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
-          <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>Message</Text>
-            <TextInput
-              style={[styles.input, styles.textArea]}
-              multiline
-              value={draft.message}
-              onChangeText={value => setDraft(prev => ({ ...prev, message: value }))}
-              placeholder="Expliquez votre demande"
-              placeholderTextColor="rgba(255,255,255,0.4)"
-            />
-          </View>
-          <TouchableOpacity
-            style={styles.primaryButton}
-            onPress={handleCreateThread}
-            disabled={creatingThread}
-          >
-            <Text style={styles.primaryButtonText}>
-              {creatingThread ? 'Création en cours...' : isAuthenticated && !isAccountBlocked ? 'Envoyer au support' : 'Envoyer au support'}
-            </Text>
-          </TouchableOpacity>
-          {supportFeedback && (
-            <Text style={styles.feedbackText}>{supportFeedback}</Text>
-          )}
-        </View>
 
-        <View style={styles.sectionCard}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Tickets précédents</Text>
-            <Text style={styles.sectionHint}>{threads.length} échanges</Text>
-          </View>
-          {loadingThreads && (
-            <ActivityIndicator color={palette.white} style={{ marginBottom: 16 }} />
-          )}
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 16 }}>
-            {threads.map(thread => (
-              <TouchableOpacity
-                key={thread.id}
-                style={[
-                  styles.threadChip,
-                  selectedThread?.id === thread.id && styles.threadChipActive,
-                ]}
-                onPress={() => selectThread(thread.id)}
-              >
-                <Text style={styles.threadChipTitle}>{thread.subject}</Text>
-                <Text style={styles.threadChipMeta}>{thread.status.toUpperCase()}</Text>
-                <Text style={styles.threadChipMeta}>#{thread.reference}</Text>
-              </TouchableOpacity>
-            ))}
-            {threads.length === 0 && !loadingThreads && (
-              <Text style={styles.emptyState}>Aucun échange pour le moment.</Text>
+          <ScrollView
+            ref={threadChatRef}
+            style={styles.chatContainer}
+            contentContainerStyle={styles.chatContent}
+            nestedScrollEnabled
+            onContentSizeChange={() => threadChatRef.current?.scrollToEnd({ animated: true })}
+          >
+            {chatItems.length === 0 && (
+              <Text style={styles.chatEmpty}>Aucun message pour le moment.</Text>
             )}
+            {chatItems.map((msg) => (
+              <View key={msg.id}>
+                <TouchableOpacity
+                  activeOpacity={0.8}
+                  onPress={() =>
+                    setExpandedMessageId((current) =>
+                      current === msg.id ? null : msg.id
+                    )
+                  }
+                  style={[
+                    styles.chatBubble,
+                    msg.role === 'admin' ? styles.chatBubbleAdmin : styles.chatBubbleUser,
+                  ]}
+                >
+                  <Text style={styles.chatText}>{msg.text}</Text>
+                  <Text style={styles.chatMeta}>{msg.role === 'admin' ? 'Support' : 'Vous'}</Text>
+                  {expandedMessageId === msg.id && (
+                    <Text style={styles.chatMeta}>
+                      {new Date(msg.at).toLocaleString('fr-FR')}
+                    </Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            ))}
           </ScrollView>
 
-          {selectedThread && (
-            <View style={styles.threadPanel}>
-              <View style={styles.threadHeader}>
-                <View>
-                  <Text style={styles.threadTitle}>{selectedThread.subject}</Text>
-                  <Text style={styles.threadMeta}>#{selectedThread.reference}</Text>
+          <View style={styles.chatComposer}>
+            <TextInput
+              style={styles.textArea}
+              value={composer}
+              multiline
+              onChangeText={setComposer}
+              placeholder="Écrire un message"
+              placeholderTextColor="rgba(255,255,255,0.4)"
+            />
+            {supportFeedback && (
+              <Text style={styles.feedbackText}>{supportFeedback}</Text>
+            )}
+            <View style={styles.chatFooter}>
+              {!!suggestions.length && (
+                <View style={styles.suggestionRow}>
+                  {suggestions.slice(0, 4).map((template) => (
+                    <TouchableOpacity key={template.title} onPress={() => applyTemplate(template.template)}>
+                      <Text style={styles.suggestionPill}>{template.title}</Text>
+                    </TouchableOpacity>
+                  ))}
                 </View>
-                <Text style={styles.threadStatus}>{selectedThread.status.toUpperCase()}</Text>
-              </View>
-
-              <View style={styles.messageList}>
-                {selectedThread.messages?.map(message => (
-                  <View
-                    key={message.id}
-                    style={[
-                      styles.messageBubble,
-                      message.sender_type === 'admin' ? styles.adminBubble : styles.userBubble,
-                    ]}
-                  >
-                    <Text style={styles.messageBody}>{message.body}</Text>
-                    <Text style={styles.messageMeta}>
-                      {new Date(message.created_at).toLocaleString('fr-FR')}
-                    </Text>
-                  </View>
-                )) || (
-                  <Text style={styles.emptyState}>Aucun message pour l'instant.</Text>
-                )}
-              </View>
-
-              <View style={styles.composerWrapper}>
-                <TextInput
-                  style={styles.composerInput}
-                  value={composer}
-                  multiline
-                  onChangeText={setComposer}
-                  placeholder="Écrire une réponse"
-                  placeholderTextColor="rgba(255,255,255,0.4)"
-                />
-                <TouchableOpacity style={styles.primaryButton} onPress={handleSendMessage} disabled={sendingMessage}>
-                  <Text style={styles.primaryButtonText}>{sendingMessage ? 'Envoi...' : 'Envoyer'}</Text>
-                </TouchableOpacity>
-              </View>
+              )}
+              <TouchableOpacity style={[styles.primaryButton, styles.sendButton]} onPress={handleSendChat} disabled={sendingMessage}>
+                <Text style={styles.primaryButtonText}>{sendingMessage ? 'Envoi...' : 'Envoyer'}</Text>
+              </TouchableOpacity>
             </View>
-          )}
+          </View>
         </View>
 
         <View style={styles.sectionCard}>
@@ -619,11 +605,11 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
   sectionCard: {
-    backgroundColor: 'rgba(13,18,30,0.85)',
+    backgroundColor: 'transparent',
     borderRadius: 28,
-    padding: 20,
+    padding: 16,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.05)',
+    borderColor: 'rgba(255,255,255,0.08)',
     marginBottom: 24,
   },
   sectionTitle: {
@@ -636,6 +622,19 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 16,
+  },
+  refreshButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+  },
+  refreshButtonText: {
+    fontFamily: fonts.bodyMedium,
+    color: palette.white,
+    fontSize: 12,
   },
   sectionHint: {
     fontFamily: fonts.body,
@@ -661,8 +660,10 @@ const styles = StyleSheet.create({
     fontFamily: fonts.body,
   },
   textArea: {
-    minHeight: 120,
+    minHeight: 88,
     textAlignVertical: 'top',
+    color: palette.white,
+    fontFamily: fonts.body,
   },
   categoryRow: {
     flexDirection: 'row',
@@ -704,6 +705,104 @@ const styles = StyleSheet.create({
     fontFamily: fonts.body,
     color: palette.amber,
     marginTop: 12,
+  },
+  chatContainer: {
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderRadius: 16,
+    padding: 14,
+    marginTop: 12,
+    height: 420,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+    overflow: 'hidden',
+  },
+  chatContent: {
+    paddingBottom: 8,
+  },
+  chatEmpty: {
+    fontFamily: fonts.body,
+    color: 'rgba(255,255,255,0.6)',
+    textAlign: 'center',
+    paddingVertical: 12,
+  },
+  chatBubble: {
+    maxWidth: '85%',
+    borderRadius: 16,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginBottom: 8,
+  },
+  chatBubbleUser: {
+    alignSelf: 'flex-end',
+    backgroundColor: 'rgba(0, 199, 167, 0.25)',
+    borderWidth: 1,
+    borderColor: 'rgba(0, 199, 167, 0.35)',
+  },
+  chatBubbleAdmin: {
+    alignSelf: 'flex-start',
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  chatText: {
+    fontFamily: fonts.body,
+    color: palette.white,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  chatMeta: {
+    marginTop: 6,
+    fontFamily: fonts.body,
+    color: 'rgba(255,255,255,0.5)',
+    fontSize: 11,
+  },
+  chatComposer: {
+    marginTop: 12,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderRadius: 16,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+  },
+  chatFooter: {
+    marginTop: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  sendButton: {
+    alignSelf: 'flex-end',
+    paddingHorizontal: 18,
+  },
+  suggestionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    flex: 1,
+  },
+  suggestionPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+    color: 'rgba(255,255,255,0.8)',
+    fontSize: 12,
+    fontFamily: fonts.bodyMedium,
+  },
+  responseCard: {
+    marginTop: 12,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderRadius: 16,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  responseText: {
+    fontFamily: fonts.body,
+    color: palette.white,
+    marginTop: 6,
   },
   threadChip: {
     padding: 16,

@@ -19,12 +19,12 @@ const NotificationContext = createContext<NotificationContextType | undefined>(u
 export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(false);
-  const { user } = useAuth();
+  const { user, isAuthenticated, token } = useAuth();
 
   const unreadCount = notifications.filter(notification => !notification.is_read).length;
 
   const refreshNotifications = async () => {
-    if (!user) return;
+    if (!user || !isAuthenticated || !token) return;
     
     try {
       setLoading(true);
@@ -121,12 +121,12 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
   };
 
   useEffect(() => {
-    if (user) {
+    if (user && isAuthenticated && token) {
       refreshNotifications();
       const interval = setInterval(refreshNotifications, 30000);
       return () => clearInterval(interval);
     }
-  }, [user]);
+  }, [user, isAuthenticated, token]);
 
   const value: NotificationContextType = {
     notifications,

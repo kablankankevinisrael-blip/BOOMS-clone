@@ -25,6 +25,44 @@ export default function Users() {
     fetcher: () => adminService.getUsers(),
   });
 
+  const getAccountStatusMeta = (user: User) => {
+    const status = user.account_status || (user.is_active ? 'active' : 'inactive');
+
+    if (status === 'inactive') {
+      return {
+        label: '⏸️ Désactivé',
+        classes: 'bg-amber-100 text-amber-800',
+        description: 'Temporaire, réactivable à tout moment.',
+        locked: false,
+      };
+    }
+
+    if (status === 'banned') {
+      return {
+        label: '🚫 Banni (72h)',
+        classes: 'bg-orange-100 text-orange-800',
+        description: 'Auto‑suppression après 72h sans réactivation.',
+        locked: true,
+      };
+    }
+
+    if (status === 'deleted') {
+      return {
+        label: '💀 Supprimé',
+        classes: 'bg-red-100 text-red-800',
+        description: 'Suppression définitive de la base de données.',
+        locked: true,
+      };
+    }
+
+    return {
+      label: '✅ Actif',
+      classes: 'bg-green-100 text-green-800',
+      description: 'Compte opérationnel.',
+      locked: false,
+    };
+  };
+
   const handleToggleStatus = async (user: User) => {
     try {
       await adminService.toggleUserStatus(user.id, !user.is_active);
@@ -124,18 +162,23 @@ export default function Users() {
     {
       key: 'is_active',
       header: 'Statut',
-      render: (value: boolean, row: User) => (
+      render: (value: boolean, row: User) => {
+        const statusMeta = getAccountStatusMeta(row);
+        return (
         <div className="space-y-2">
           <button
             onClick={() => handleToggleStatus(row)}
+            disabled={statusMeta.locked}
             className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-              value
-                ? 'bg-green-100 text-green-800 hover:bg-green-200'
-                : 'bg-red-100 text-red-800 hover:bg-red-200'
-            }`}
+              statusMeta.classes
+            } ${statusMeta.locked ? 'opacity-60 cursor-not-allowed' : 'hover:opacity-90'}`}
           >
-            {value ? '✅ Actif' : '❌ Inactif'}
+            {statusMeta.label}
           </button>
+
+          <div className="text-xs text-gray-500">
+            {statusMeta.description}
+          </div>
           
           {row.is_admin && (
             <div className="inline-flex items-center px-2 py-1 bg-purple-100 text-purple-800 rounded-full text-xs font-medium">
@@ -143,7 +186,8 @@ export default function Users() {
             </div>
           )}
         </div>
-      ),
+        );
+      },
     },
     {
       key: 'actions',
@@ -275,15 +319,19 @@ export default function Users() {
                   <label className="block text-sm font-medium text-gray-700">
                     Statut Compte
                   </label>
+                  {(() => {
+                    const statusMeta = getAccountStatusMeta(selectedUser);
+                    return (
                   <p className="mt-1 text-sm">
-                    <span className={`inline-block px-2 py-1 rounded text-xs font-medium ${
-                      selectedUser.is_active
-                        ? 'bg-green-100 text-green-800'
-                        : 'bg-red-100 text-red-800'
-                    }`}>
-                      {selectedUser.is_active ? '✅ Actif' : '❌ Inactif'}
+                    <span className={`inline-block px-2 py-1 rounded text-xs font-medium ${statusMeta.classes}`}>
+                      {statusMeta.label}
+                    </span>
+                    <span className="block text-xs text-gray-500 mt-1">
+                      {statusMeta.description}
                     </span>
                   </p>
+                    );
+                  })()}
                 </div>
 
                 <div>

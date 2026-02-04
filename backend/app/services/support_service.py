@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import uuid4
 
@@ -15,6 +15,7 @@ from app.models.support_models import (
     BannedUserMessage,
 )
 from app.models.user_models import User
+from app.models.user_models import UserStatus
 from app.schemas.support_schemas import (
     SupportThreadCreate,
     SupportMessageCreate,
@@ -234,7 +235,7 @@ class SupportService:
         self,
         payload: BannedMessageCreate,
         current_user: Optional[User],
-    ) -> BannedUserMessage:
+    ) -> dict:
         body = (payload.message or "").strip()
         if not body:
             raise ValueError("Le message est obligatoire")
@@ -242,8 +243,12 @@ class SupportService:
         if current_user is None and not (payload.user_phone or payload.user_email):
             raise ValueError("Téléphone ou email requis pour vous identifier")
 
+        resolved_user = None
+        if current_user is None:
+            resolved_user = self._resolve_user_by_contact(payload.user_phone, payload.user_email)
+
         message = BannedUserMessage(
-            user_id=current_user.id if current_user else None,
+            user_id=current_user.id if current_user else (resolved_user.id if resolved_user else None),
             user_phone=current_user.phone if current_user else payload.user_phone,
             user_email=current_user.email if current_user else payload.user_email,
             message=body,
@@ -253,20 +258,35 @@ class SupportService:
         self.db.add(message)
         self.db.commit()
         self.db.refresh(message)
-        return message
+        return self._enrich_banned_message(message)
 
-    def list_banned_messages(self, status_filter: Optional[str]) -> list[BannedUserMessage]:
+    def list_banned_messages(self, status_filter: Optional[str]) -> list[dict]:
         query = self.db.query(BannedUserMessage)
         if status_filter:
             query = query.filter(BannedUserMessage.status == status_filter)
-        return query.order_by(BannedUserMessage.created_at.desc()).all()
+        messages = query.order_by(BannedUserMessage.created_at.desc()).all()
+        return self._enrich_banned_messages(messages)
+
+    def list_banned_messages_public(self, phone: Optional[str], email: Optional[str]) -> list[dict]:
+        query = self.db.query(BannedUserMessage)
+        if phone and email:
+            query = query.filter(
+                (BannedUserMessage.user_phone == phone) | (BannedUserMessage.user_email == email)
+            )
+        elif phone:
+            query = query.filter(BannedUserMessage.user_phone == phone)
+        elif email:
+            query = query.filter(BannedUserMessage.user_email == email)
+
+        messages = query.order_by(BannedUserMessage.created_at.desc()).all()
+        return self._enrich_banned_messages(messages)
 
     def respond_to_banned_message(
         self,
         message_id: int,
         payload: AdminResponseCreate,
         admin: User,
-    ) -> BannedUserMessage:
+    ) -> dict:
         message = self.db.query(BannedUserMessage).filter(BannedUserMessage.id == message_id).first()
         if not message:
             raise ValueError("Message introuvable")
@@ -282,7 +302,93 @@ class SupportService:
         self.db.add(message)
         self.db.commit()
         self.db.refresh(message)
-        return message
+        return self._enrich_banned_message(message)
+
+    def _enrich_banned_messages(self, messages: list[BannedUserMessage]) -> list[dict]:
+        user_ids = {message.user_id for message in messages if message.user_id}
+        users = []
+        if user_ids:
+            users = self.db.query(User).filter(User.id.in_(user_ids)).all()
+        user_lookup = {user.id: user for user in users}
+        return [self._enrich_banned_message(message, user_lookup) for message in messages]
+
+    def _enrich_banned_message(
+        self,
+        message: BannedUserMessage,
+        user_lookup: Optional[dict[int, User]] = None,
+    ) -> dict:
+        meta = message.meta_payload or {}
+        user = user_lookup.get(message.user_id) if user_lookup and message.user_id else None
+        if user is None and not message.user_id:
+            user = self._resolve_user_by_contact(message.user_phone, message.user_email)
+
+        current_status = None
+        if user is None and message.user_id:
+            current_status = "deleted"
+        elif user:
+            if user.status == UserStatus.BANNED:
+                current_status = "banned"
+            elif user.status == UserStatus.SUSPENDED or user.is_active is False:
+                current_status = "inactive"
+            else:
+                current_status = "active"
+
+        action_type = meta.get("action_type")
+        if action_type not in {"inactive", "banned", "deleted"}:
+            action_type = current_status
+
+        action_reason = meta.get("action_reason") or meta.get("reason")
+        if not action_reason and user:
+            action_reason = user.status_reason
+
+        action_at = meta.get("action_at")
+        if not action_at and user:
+            if current_status == "banned":
+                action_at = user.banned_at or user.last_status_changed_at
+            else:
+                action_at = user.last_status_changed_at
+
+        action_by = meta.get("action_by")
+        if not action_by and user:
+            if current_status == "banned":
+                action_by = user.banned_by
+            else:
+                action_by = user.status_changed_by
+
+        ban_until = meta.get("ban_until")
+        if not ban_until and user and current_status == "banned" and user.banned_at:
+            ban_until = user.banned_at + timedelta(hours=72)
+
+        return {
+            "id": message.id,
+            "user_id": message.user_id,
+            "user_phone": message.user_phone,
+            "user_email": message.user_email,
+            "message": message.message,
+            "admin_response": message.admin_response,
+            "status": message.status,
+            "channel": message.channel,
+            "created_at": message.created_at,
+            "responded_at": message.responded_at,
+            "responded_by": message.responded_by,
+            "meta_payload": meta,
+            "action_type": action_type,
+            "action_reason": action_reason,
+            "action_at": action_at,
+            "action_by": action_by,
+            "ban_until": ban_until,
+            "current_account_status": current_status,
+        }
+
+    def _resolve_user_by_contact(self, phone: Optional[str], email: Optional[str]) -> Optional[User]:
+        query = self.db.query(User)
+        if phone and email:
+            return query.filter((User.phone == phone) | (User.email == email)).first()
+        if phone:
+            return query.filter(User.phone == phone).first()
+        if email:
+            return query.filter(User.email == email).first()
+        return None
     
     # ========== USER STATUS MANAGEMENT ==========
     def update_user_status(self, user_id: int, admin_id: int, 
