@@ -8,9 +8,14 @@ import { boomsWebSocket } from '../services/websocket';
  * Vérifie périodiquement la cohérence
  */
 export const useAuthSync = () => {
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated, user, token } = useAuth();
   const syncIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const lastSyncCheckRef = useRef<number>(0);
+  const lastAuthChangeRef = useRef<number>(0);
+
+  useEffect(() => {
+    lastAuthChangeRef.current = Date.now();
+  }, [isAuthenticated, user?.id, token]);
 
   useEffect(() => {
     const performSyncCheck = () => {
@@ -59,9 +64,13 @@ export const useAuthSync = () => {
       }
 
       // 🚨 SCÉNARIO : WebSocket connecté sans auth
-      if (!isAuthenticated && wsState.isConnected) {
+      const hasAuthIdentity = Boolean(user?.id || token);
+      const authGraceElapsed = Date.now() - lastAuthChangeRef.current > 8000;
+      if (!isAuthenticated && wsState.isConnected && !hasAuthIdentity && authGraceElapsed) {
         console.error('🚨 [SYNC] WebSocket connecté sans auth!');
         boomsWebSocket.resetForNewUser();
+      } else if (!isAuthenticated && wsState.isConnected && hasAuthIdentity) {
+        console.warn('⚠️ [SYNC] WebSocket connecté avec identité partielle (transitoire)');
       }
 
       // 🚨 SCÉNARIO : Auth valide mais WebSocket pas connecté
@@ -82,7 +91,7 @@ export const useAuthSync = () => {
         clearInterval(syncIntervalRef.current);
       }
     };
-  }, [isAuthenticated, user?.id]); // Dépendances critiques
+  }, [isAuthenticated, user?.id, token]); // Dépendances critiques
 
   return null;
 };
