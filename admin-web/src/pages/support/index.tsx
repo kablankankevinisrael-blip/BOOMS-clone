@@ -465,6 +465,24 @@ export default function SupportCommandCenter() {
 
         {view === 'threads' ? (
           <section className="grid gap-6 lg:grid-cols-[360px_minmax(0,1fr)]">
+            {pendingBannedCount > 0 && (
+              <div className="lg:col-span-2 rounded-2xl border border-rose-200 bg-rose-50 px-5 py-4 flex flex-wrap items-center gap-3">
+                <div className="flex items-center gap-2 text-rose-800 font-semibold">
+                  <ShieldAlert className="w-4 h-4" />
+                  {pendingBannedCount} alerte{pendingBannedCount > 1 ? 's' : ''} bannie{pendingBannedCount > 1 ? 's' : ''} en attente
+                </div>
+                <p className="text-sm text-rose-700">Consultez les messages envoyés par les comptes bannis.</p>
+                <button
+                  onClick={() => {
+                    setBannedFilter('pending');
+                    setView('banned');
+                  }}
+                  className="ml-auto inline-flex items-center gap-2 px-4 py-2 rounded-full bg-rose-600 text-white text-sm font-semibold"
+                >
+                  Voir les alertes
+                </button>
+              </div>
+            )}
             <aside className="space-y-6">
               <div className="rounded-2xl border border-slate-200 bg-white shadow-sm p-4">
                 <div className="flex items-center justify-between mb-4">
