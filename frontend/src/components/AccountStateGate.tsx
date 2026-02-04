@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, TextInput, TouchableOpacity } from 'react-nativ
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useAuth } from '../contexts/AuthContext';
-import { AccountStatusSnapshot } from '../services/support';
+import supportService, { AccountStatusSnapshot } from '../services/support';
 import { palette, gradients, fonts } from '../styles/theme';
 import { navigationRef } from '../navigation/AppNavigator';
 
@@ -94,6 +94,8 @@ export default function AccountStateGate({ children }: AccountStateGateProps) {
   const [appealMessage, setAppealMessage] = useState('');
   const [sendingAppeal, setSendingAppeal] = useState(false);
   const [appealFeedback, setAppealFeedback] = useState<string | null>(null);
+  const [contactPhone, setContactPhone] = useState('');
+  const [contactEmail, setContactEmail] = useState('');
 
   useEffect(() => {
     if (!accountStatus) {
@@ -104,6 +106,30 @@ export default function AccountStateGate({ children }: AccountStateGateProps) {
     }
     setLocalStatus(accountStatus);
   }, [accountStatus, refreshAccountStatus, token]);
+
+  useEffect(() => {
+    const loadContact = async () => {
+      try {
+        const storedUser = await AsyncStorage.getItem('booms_user');
+        if (storedUser) {
+          const parsed = JSON.parse(storedUser);
+          if (parsed?.phone) setContactPhone(parsed.phone);
+          if (parsed?.email) setContactEmail(parsed.email);
+        }
+        if (!contactPhone && !contactEmail) {
+          const storedContact = await AsyncStorage.getItem('booms_contact');
+          if (storedContact) {
+            const parsed = JSON.parse(storedContact);
+            if (parsed?.phone) setContactPhone(parsed.phone);
+            if (parsed?.email) setContactEmail(parsed.email);
+          }
+        }
+      } catch {
+        // silencieux
+      }
+    };
+    loadContact();
+  }, []);
 
   const status = localStatus?.status?.toLowerCase();
   const isBlocking = Boolean(localStatus?.is_blocking) || status === 'inactive' || status === 'banned' || status === 'suspended';
@@ -120,6 +146,7 @@ export default function AccountStateGate({ children }: AccountStateGateProps) {
       return;
     }
     try {
+      console.log('📨 [SUPPORT-PANEL] Préparation envoi message');
       setSendingAppeal(true);
       setAppealFeedback(null);
       let userPhone: string | undefined;
@@ -143,11 +170,28 @@ export default function AccountStateGate({ children }: AccountStateGateProps) {
         // silencieux
       }
 
+      userPhone = (userPhone || contactPhone.trim()).trim();
+      userEmail = (userEmail || contactEmail.trim()).trim();
+
+      console.log('📨 [SUPPORT-PANEL] Contact résolu', {
+        hasPhone: !!userPhone,
+        hasEmail: !!userEmail,
+        phonePreview: userPhone ? `${userPhone}` : null,
+        emailPreview: userEmail ? `${userEmail}` : null,
+      });
+
       if (!userPhone && !userEmail) {
         setAppealFeedback('Téléphone ou email requis pour contacter le support.');
         return;
       }
 
+      try {
+        await AsyncStorage.setItem('booms_contact', JSON.stringify({ phone: userPhone, email: userEmail }));
+      } catch {
+        // silencieux
+      }
+
+      console.log('📨 [SUPPORT-PANEL] Envoi vers /support/banned-messages');
       await supportService.submitBannedAppeal({
         message: appealMessage.trim(),
         channel: 'mobile_app',
@@ -156,7 +200,9 @@ export default function AccountStateGate({ children }: AccountStateGateProps) {
       });
       setAppealFeedback('Votre message a bien été transmis à l\'équipe support.');
       setAppealMessage('');
+      console.log('✅ [SUPPORT-PANEL] Message envoyé');
     } catch (error: any) {
+      console.error('❌ [SUPPORT-PANEL] Erreur envoi', error?.response?.data || error?.message);
       const detail = error?.response?.data?.detail;
       setAppealFeedback(
         typeof detail === 'string'
@@ -202,6 +248,24 @@ export default function AccountStateGate({ children }: AccountStateGateProps) {
           </View>
           <View style={styles.blockSection}>
             <Text style={styles.sectionLabel}>Contacter le support</Text>
+            <TextInput
+              style={styles.input}
+              value={contactPhone}
+              onChangeText={setContactPhone}
+              placeholder="Téléphone"
+              placeholderTextColor="rgba(255,255,255,0.6)"
+              keyboardType="phone-pad"
+              editable={!contactPhone}
+            />
+            <TextInput
+              style={[styles.input, { marginTop: 10 }]}
+              value={contactEmail}
+              onChangeText={setContactEmail}
+              placeholder="Email"
+              placeholderTextColor="rgba(255,255,255,0.6)"
+              keyboardType="email-address"
+              autoCapitalize="none"
+            />
             <TextInput
               style={styles.textArea}
               value={appealMessage}
@@ -324,6 +388,15 @@ const styles = StyleSheet.create({
   },
   textArea: {
     minHeight: 100,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+    padding: 14,
+    color: palette.white,
+    fontFamily: fonts.body,
+    marginTop: 8,
+  },
+  input: {
     borderRadius: 16,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.1)',

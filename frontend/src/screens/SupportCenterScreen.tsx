@@ -199,6 +199,11 @@ export default function SupportCenterScreen() {
           // silencieux
         }
 
+        console.log('📨 [SUPPORT] Envoi public (banned-messages)', {
+          hasPhone: !!userPhone,
+          hasEmail: !!userEmail,
+          category: draft.category,
+        });
         await supportService.submitBannedAppeal({
           message: `${draft.subject.trim()}\n\n${draft.message.trim()}`,
           channel: 'mobile_app',
@@ -210,6 +215,7 @@ export default function SupportCenterScreen() {
         return;
       }
 
+      console.log('📨 [SUPPORT] Envoi ticket authentifié');
       const created = await supportService.createThread({
         subject: draft.subject.trim(),
         category: draft.category,
@@ -218,7 +224,7 @@ export default function SupportCenterScreen() {
       setDraft({ subject: '', category: draft.category, message: '' });
       await loadThreads(created.id);
     } catch (error) {
-      console.error('❌ [SUPPORT] Erreur création ticket', error);
+      console.error('❌ [SUPPORT] Erreur création ticket', (error as any)?.response?.data || error);
       const detail = (error as any)?.response?.data?.detail;
       setSupportFeedback(
         typeof detail === 'string' ? detail : 'Impossible d\'envoyer le message.'
