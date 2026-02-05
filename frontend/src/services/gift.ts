@@ -161,9 +161,26 @@ export const giftService = {
       return response.data;
       
     } catch (error: any) {
-      console.error('❌ [SEND_GIFT] ERREUR:', error);
-      const errorMessage = error.response?.data?.detail || 'Erreur lors de l\'envoi du cadeau';
-      console.error('❌ [SEND_GIFT] Message erreur:', errorMessage);
+      const rawMessage = error.response?.data?.detail || 'Erreur lors de l\'envoi du cadeau';
+      let errorMessage = rawMessage;
+      if (typeof rawMessage === 'string') {
+        const normalized = rawMessage.toLowerCase();
+        if (normalized.includes('destinataire') && normalized.includes('actif')) {
+          errorMessage =
+            'Le destinataire est inactif ou supprimé et ne peut pas recevoir de cadeau pour le moment.\n\n' +
+            'Vérifiez que :\n' +
+            '• le numéro est correct,\n' +
+            '• le compte est bien actif,\n' +
+            '• le destinataire n’a pas été supprimé.\n\n' +
+            'Si besoin, demandez au destinataire de se reconnecter ou contactez le support.';
+        }
+      }
+      if (typeof errorMessage === 'string' && errorMessage.toLowerCase().includes('destinataire')) {
+        console.warn('⚠️ [SEND_GIFT] Envoi refusé:', errorMessage);
+      } else {
+        console.error('❌ [SEND_GIFT] ERREUR:', error);
+        console.error('❌ [SEND_GIFT] Message erreur:', errorMessage);
+      }
       throw new Error(errorMessage);
     }
   },

@@ -202,11 +202,22 @@ api.interceptors.response.use(
       return Promise.reject(error);
     }
     
-    console.error(`❌ [API] Erreur ${error.config?.method?.toUpperCase()} ${error.config?.url}:`, {
-      status: error.response?.status,
-      data: error.response?.data,
-      message: error.message,
-    });
+    const errorUrl = error.config?.url || '';
+    const errorStatus = error.response?.status;
+    const isGiftInactive =
+      errorStatus === 400 &&
+      errorUrl.includes('/gift/send') &&
+      typeof errorDetail === 'string' &&
+      errorDetail.toLowerCase().includes('destinataire') &&
+      errorDetail.toLowerCase().includes('actif');
+
+    if (!isGiftInactive) {
+      console.error(`❌ [API] Erreur ${error.config?.method?.toUpperCase()} ${errorUrl}:`, {
+        status: errorStatus,
+        data: error.response?.data,
+        message: error.message,
+      });
+    }
     
     // Gestion erreur 401
     if (error.response?.status === 401 && !originalRequest._retry) {

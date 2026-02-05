@@ -43,6 +43,7 @@ const SendGiftScreen: React.FC<Props> = ({ navigation, route }) => {
   const [searchResults, setSearchResults] = useState<UserSearchResult[]>([]);
   const [contacts, setContacts] = useState<UserSearchResult[]>([]);
   const [loading, setLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
   const [boomDetails, setBoomDetails] = useState<Boom | null>(null);
   const [loadingBoom, setLoadingBoom] = useState(true);
@@ -116,8 +117,9 @@ const SendGiftScreen: React.FC<Props> = ({ navigation, route }) => {
   };
 
   const handleSendGift = async () => {
+    setErrorMessage(null);
     if (!receiverPhone.trim()) {
-      Alert.alert('Erreur', 'Veuillez saisir un numéro de téléphone');
+      setErrorMessage('Veuillez saisir un numéro de téléphone valide pour le destinataire.');
       return;
     }
 
@@ -138,7 +140,23 @@ const SendGiftScreen: React.FC<Props> = ({ navigation, route }) => {
         [{ text: 'OK', onPress: () => navigation.goBack() }]
       );
     } catch (error: any) {
-      Alert.alert('Erreur', error.response?.data?.detail || 'Erreur lors de l\'envoi du cadeau');
+      const detail = error?.response?.data?.detail || error?.message;
+      let messageText = 'Erreur lors de l\'envoi du cadeau';
+      if (typeof detail === 'string') {
+        const normalized = detail.toLowerCase();
+        if (normalized.includes('destinataire') && normalized.includes('actif')) {
+          messageText =
+            'Le destinataire est inactif ou supprimé et ne peut pas recevoir de cadeau pour le moment.\n\n' +
+            'Vérifiez que :\n' +
+            '• le numéro est correct,\n' +
+            '• le compte est bien actif,\n' +
+            '• le destinataire n’a pas été supprimé.\n\n' +
+            'Si besoin, demandez au destinataire de se reconnecter ou contactez le support.';
+        } else {
+          messageText = detail;
+        }
+      }
+      setErrorMessage(messageText);
     } finally {
       setLoading(false);
     }
@@ -200,6 +218,13 @@ const SendGiftScreen: React.FC<Props> = ({ navigation, route }) => {
       >
         <View style={styles.card}>
         <Text style={styles.title}>Envoyer un cadeau</Text>
+
+        {errorMessage && (
+          <View style={styles.errorBanner}>
+            <Text style={styles.errorTitle}>Envoi impossible</Text>
+            <Text style={styles.errorText}>{errorMessage}</Text>
+          </View>
+        )}
         
         {/* Produit */}
         <View style={styles.productInfo}>
@@ -357,6 +382,24 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 4,
     elevation: 3,
+  },
+  errorBanner: {
+    backgroundColor: '#FEF2F2',
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    marginTop: 12,
+    marginBottom: 12,
+  },
+  errorTitle: {
+    color: '#991B1B',
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  errorText: {
+    color: '#7F1D1D',
+    lineHeight: 18,
   },
   title: {
     fontSize: 24,

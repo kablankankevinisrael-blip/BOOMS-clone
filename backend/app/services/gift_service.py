@@ -61,7 +61,10 @@ class GiftService:
             raise ValueError("Destinataire non trouvé")
         
         if not receiver.is_active:
-            raise ValueError("Le destinataire n'est pas actif")
+            raise ValueError(
+                "Le destinataire est inactif ou supprimé et ne peut pas recevoir de cadeau pour le moment. "
+                "Vérifiez que le numéro est correct et que le compte est actif."
+            )
         
         if sender_id == receiver.id:
             raise ValueError("Vous ne pouvez pas vous envoyer un cadeau à vous-même")
